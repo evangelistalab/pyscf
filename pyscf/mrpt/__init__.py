@@ -19,3 +19,5 @@ from pyscf.mrpt.nevpt2 import NEVPT
 from pyscf.mrpt.nevpt2 import sc_nevpt
 NEVPT2 = sc_nevpt
 
+from pyscf.mrpt import dsrg_mrpt2
+from pyscf.mrpt.dsrg_mrpt2 import DSRG_MRPT2
