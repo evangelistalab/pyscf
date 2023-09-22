@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# Authors: Sheng Guo
-#          Qiming Sun <osirpt.sun@gmail.com>
+# Authors:
+#          Shuhang Li <shuhangli98@gmail.com>
+#          Zijun Zhao <zdj519@gmail.com>
 #
 
 import numpy as np
@@ -28,15 +29,18 @@ from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
 
 MACHEPS = 1e-9
-Taylor_threshold = 1e-3
+TAYLOR_THRES = 1e-3
 
-def Taylor_Exp(Z, Taylor_threshold):
-    n = int(0.5 * (15.0 / Taylor_threshold + 1)) + 1
+def taylor_exp(z):
+    '''
+    Taylor expansion of (1-exp(-z^2))/z for small z.
+    '''
+    n = int(0.5 * (15.0 / TAYLOR_THRES + 1)) + 1
     if (n > 0):
-        value = Z
-        tmp = Z
+        value = z
+        tmp = z
         for x in range(n-1):
-            tmp *= -1.0 * Z * Z / (x + 2)
+            tmp *= -1.0 * z * z / (x + 2)
             value += tmp
 
         return value
@@ -44,20 +48,21 @@ def Taylor_Exp(Z, Taylor_threshold):
         return 0.0
     
 def regularized_denominator(x, s):
+    '''
+    Returns (1-exp(-s*x^2))/x
+    '''
     z = np.sqrt(s) * x
     if abs(z) <= MACHEPS:
-        return Taylor_Exp(z, Taylor_threshold) * np.sqrt(s)
-    return (1. - np.exp(-s * x**2)) / x
-
-def regularized_denominator(x, s):
-    z = np.sqrt(s) * x
-    if abs(z) <= MACHEPS:
-        return Taylor_Exp(z, Taylor_threshold) * np.sqrt(s)
-    return (1. - np.exp(-s * x**2)) / x
+        return taylor_exp(z) * np.sqrt(s)
+    else:
+        return (1. - np.exp(-s * x**2)) / x
     
-def get_SF_RDM(ci_vec, nelec, norb):
-# Reordered 2-rdm <p\dagger r\dagger s q> in Pyscf is stored as: dm2[pqrs]
-# Forte store it as rdm[prqs]
+def get_SF_RDM(ci_vec, norb, nelec):
+    '''
+    Returns the spin-free active space 1-/2-/3-RDM.
+    Reordered 2-rdm <p\dagger r\dagger s q> in Pyscf is stored as: dm2[pqrs]
+    Forte stores it as rdm[prqs]
+    '''
     dm1, dm2, dm3 = fci.rdm.make_dm123('FCI3pdm_kern_sf', ci_vec, ci_vec, norb, nelec)
     dm1, dm2, dm3 = fci.rdm.reorder_dm123(dm1, dm2, dm3)
     G1 = np.einsum("pq -> qp", dm1)
@@ -66,12 +71,18 @@ def get_SF_RDM(ci_vec, nelec, norb):
     return G1, G2, G3
 
 def get_SF_cu2(G1, G2):
+    '''
+    Returns the spin-free active space 2-body cumulant.
+    '''
     L2 = G2.copy() 
     L2 -= np.einsum("pr, qs->pqrs", G1, G1)
     L2 += 0.5 * np.einsum("ps, qr->pqrs", G1, G1)
     return L2
     
 def get_SF_cu3(G1, G2, G3): 
+    '''
+    Returns the spin-free active space 3-body cumulant.
+    '''
     L3 = G3.copy() # PQRSTU
     L3 -= (np.einsum("ps,qrtu -> pqrstu", G1, G2) + np.einsum("qt,prsu -> pqrstu", G1, G2) + np.einsum("ru,pqst -> pqrstu", G1, G2))
     L3 += 0.5 * (np.einsum("pt,qrsu -> pqrstu", G1, G2) + np.einsum("pu,qrts -> pqrstu", G1, G2) + np.einsum("qs,prtu -> pqrstu", G1, G2) + np.einsum("qu,prst -> pqrstu", G1, G2) + np.einsum("rs,pqut -> pqrstu", G1, G2) + np.einsum("rt,pqsu -> pqrstu", G1, G2))
@@ -79,18 +90,6 @@ def get_SF_cu3(G1, G2, G3):
     L3 -= (np.einsum("ps, qu, rt -> pqrstu", G1, G1, G1) + np.einsum("pu, qt, rs -> pqrstu", G1, G1, G1) + np.einsum("pt, qs, ru -> pqrstu", G1, G1, G1))
     L3 += 0.5 * (np.einsum("pt, qu, rs -> pqrstu", G1, G1, G1) + np.einsum("pu, qs, rt -> pqrstu", G1, G1, G1))
     return L3
-
-# def F_T1(mc, dms, eris):
-#     pass
-
-# def F_T2(mc, dms, eris):
-#     pass
-
-# def V_T1(mc, dms, eris):
-#     pass
-
-# def V_T2(mc, dms, eris):
-#     pass
 
 class DSRG_MRPT2(lib.StreamObject):
     '''
@@ -120,20 +119,14 @@ class DSRG_MRPT2(lib.StreamObject):
         self.flow_param = s
         self.relax = relax
         
-        self.res = mc.kernel()
+        if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
 
+        self.nao = mc.mol.nao
         self.ncore = mc.ncore
         self.nact  = mc.ncas
         self.nelecas = mc.nelecas # Tuple of (nalpha, nbeta)
-        
-        if (type(self.nelecas) is tuple):
-            self.nelec = 0
-            for i in self.nelecas:
-                self.nelec += i
-        else:
-            self.nelec = self.nelecas
-        
-        self.nvirt = mc.mol.nao - self.nact - self.ncore
+                
+        self.nvirt = self.nao - self.nact - self.ncore
         self.flow_param = s
         
         self.nhole = self.ncore + self.nact
@@ -150,50 +143,52 @@ class DSRG_MRPT2(lib.StreamObject):
         self.pa = slice(0,self.nact)
         self.pv = slice(self.nact, self.nact + self.nvirt)
         
-        rhf_eri_ao = self.mol.intor('int2e_sph', aosym='s1') # Chemist's notation (\mu\nu|\lambda\rho)
-        self.rhf_eri_mo = ao2mo.incore.full(rhf_eri_ao, self.res[3], False) # (pq|rs)
+        rhf_eri_ao = self.mc.mol.intor('int2e_sph', aosym='s1') # Chemist's notation (\mu\nu|\lambda\rho)
+        self.rhf_eri_mo = ao2mo.incore.full(rhf_eri_ao, self.mc.mo_coeff, False) # (pq|rs)
 
         self.e_corr = None
-
-    def load_ci(self, root=None):
-        if root is None:
-            root = self.root
         
-        if self.fcisolver.nroots == 1:
-            return self.ci
-        else:
-            return self.ci[root]
+    def ao2mo(self, mo_coeff): # frozen core should be added later        
+        rhf_hcore_ao = self.mol.intor_symmetric('int1e_kin') + self.mol.intor_symmetric('int1e_nuc')
+        self.rhf_hcore_mo = np.einsum('pi,pq,qj->ij', mo_coeff, rhf_hcore_ao, mo_coeff)
         
+        rhf_eri_ao = self.mol.intor('int2e_sph', aosym='s1') # Chemist's notation (\mu\nu|\lambda\rho)
+        self.rhf_eri_mo = ao2mo.incore.full(rhf_eri_ao, mo_coeff, False) # (pq|rs)
+    
     def semi_canonicalize(self):
-        # Within this function, we generate semicanonicalizer, RDMs, cumulant, F, and V.
+        '''
+        Within this function, we generate semicanonicalizer, RDMs, cumulant, F, and V.
+        '''
         
-        F = np.einsum("pi, pq, qj->ij", self.res[3], self.mc.get_fock(), self.res[3], dtype='float64', optimize='optimal')
+        _fock_canon = np.einsum("pi, pq, qj->ij", self.mc.mo_coeff, self.mc.get_fock(), self.mc.mo_coeff, dtype='float64', optimize='optimal')
         
         self.semicanonicalizer = np.zeros((self.nao, self.nao), dtype='float64')
-        _, self.semicanonicalizer[self.core,self.core] = np.linalg.eigh(F[self.core,self.core])
-        _, self.semicanonicalizer[self.active,self.active] = np.linalg.eigh(F[self.active,self.active])
-        _, self.semicanonicalizer[self.virt,self.virt] = np.linalg.eigh(F[self.virt,self.virt])
+        _, self.semicanonicalizer[self.core,self.core] = np.linalg.eigh(_fock_canon[self.core,self.core])
+        _, self.semicanonicalizer[self.active,self.active] = np.linalg.eigh(_fock_canon[self.active,self.active])
+        _, self.semicanonicalizer[self.virt,self.virt] = np.linalg.eigh(_fock_canon[self.virt,self.virt])
         
         # RDMs in semi-canonical basis.
-        G1, G2, G3 = get_SF_RDM(self.res[2], self.nelec, self.nact)
-        self.G1 = np.einsum("pi, pq, qj->ij", self.semicanonicalizer[self.active,self.active], G1, self.semicanonicalizer[self.active,self.active], dtype='float64', optimize='optimal')
-        self.G2 = np.einsum("pi, qj, rk, sl, pqrs->ijkl", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], G2, dtype='float64', optimize='optimal')
-        self.G3 = np.einsum("pi, qj, rk, sl, tm, un, pqrstu->ijklmn", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], G3, dtype='float64', optimize='optimal')
-        self.Eta = 2. * np.identity(self.nact) - self.G1
-        self.L1 = self.G1.copy() # Remove this.
-        self.L2 = get_SF_cu2(self.G1, self.G2)
-        self.L3 = get_SF_cu3(self.G1, self.G2, self.G3)
+        _G1_canon, _G2_canon, _G3_canon = get_SF_RDM(self.mc.ci, self.nact, self.nelecas)
+        _G1_semi_canon = np.einsum("pi,pq,qj->ij", self.semicanonicalizer[self.active,self.active], _G1_canon, self.semicanonicalizer[self.active,self.active], dtype='float64', optimize='optimal')
+        _G2_semi_canon = np.einsum("pi,qj,rk,sl,pqrs->ijkl", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G2_canon, dtype='float64', optimize='optimal')
+        _G3_semi_canon = np.einsum("pi,qj,rk,sl,tm,un,pqrstu->ijklmn", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G3_canon, dtype='float64', optimize='optimal')
+        self.Eta = 2. * np.identity(self.nact) - _G1_semi_canon
+        self.L1 = _G1_semi_canon.copy()
+        self.L2 = get_SF_cu2(_G1_semi_canon, _G2_semi_canon)
+        self.L3 = get_SF_cu3(_G1_semi_canon, _G2_semi_canon, _G3_semi_canon)
+        del _G1_canon, _G2_canon, _G3_canon, _G1_semi_canon, _G2_semi_canon, _G3_semi_canon
         
-        self.F = np.einsum("pi, pq, qj->ij", self.semicanonicalizer, F, self.semicanonicalizer, dtype='float64', optimize='optimal')
+        self.fock = np.einsum("pi,pq,qj->ij", self.semicanonicalizer, _fock_canon, self.semicanonicalizer, dtype='float64', optimize='optimal')
         
-        tmp= self.rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
-        tmp= np.einsum("aibj->abij", tmp, dtype='float64')
+        _tmp = self.rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
+        _tmp = np.einsum("aibj->abij", _tmp, dtype='float64')
         
-        self.V = np.einsum("pi, qj, pqrs, rk, sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], dtype='float64', optimize='optimal') 
-        self.e_orb = np.diagonal(self.F)
+        self.V = np.einsum("pi,qj,pqrs,rk,sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], dtype='float64', optimize='optimal') 
+        self.e_orb = np.diagonal(self.fock)
+        del _tmp
 
     def compute_T2(self):
-        self.T2 = np.einsum("abij -> ijab", self.V.copy())
+        self.T2 = np.einsum("abij->ijab", self.V.copy())
         for i in range(self.nhole):
             for j in range(self.nhole):
                 for k in range(self.npart):
@@ -207,9 +202,9 @@ class DSRG_MRPT2(lib.StreamObject):
     
     def compute_T1(self):
         self.T1 = np.zeros((self.nhole, self.npart), dtype='float64')
-        self.T1 = self.F[self.hole,self.part].copy()
-        self.T1  += 0.5 * np.einsum('ivaw, wu, uv->ia', self.S[:, self.ha, :, self.pa], self.F[self.active,self.active], self.G1, dtype='float64', optimize='optimal')
-        self.T1 -= 0.5 * np.einsum('iwau, vw, uv->ia', self.S[:, self.ha, :, self.pa], self.F[self.active,self.active], self.G1, dtype='float64', optimize='optimal')
+        self.T1 = self.fock[self.hole,self.part].copy()
+        self.T1  += 0.5 * np.einsum('ivaw,wu,uv->ia', self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, dtype='float64', optimize='optimal')
+        self.T1 -= 0.5 * np.einsum('iwau,vw,uv->ia', self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, dtype='float64', optimize='optimal')
         
         for i in range(self.nhole):
             for k in range(self.npart):
@@ -229,78 +224,68 @@ class DSRG_MRPT2(lib.StreamObject):
                         self.V_tilde[k, l, i, j] *= np.float64(1. + np.exp(-self.flow_param * (denom)**2))
     
     def renormalize_F(self):
-        tmp_f = np.zeros((self.npart, self.nhole), dtype='float64')
-        tmp_f = self.F[self.part,self.hole].copy()
-        tmp_f += 0.5 * np.einsum("ivaw, wu, uv->ai", self.S[:, self.ha, :, self.pa], self.F[self.active,self.active], self.G1, dtype='float64', optimize='optimal')
-        tmp_f -= 0.5 * np.einsum("iwau, vw, uv->ai", self.S[:, self.ha, :, self.pa], self.F[self.active,self.active], self.G1, dtype='float64', optimize='optimal')
+        _tmp = np.zeros((self.npart, self.nhole), dtype='float64')
+        _tmp = self.fock[self.part,self.hole].copy()
+        _tmp += 0.5 * np.einsum("ivaw, wu, uv->ai", self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, dtype='float64', optimize='optimal')
+        _tmp -= 0.5 * np.einsum("iwau, vw, uv->ai", self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, dtype='float64', optimize='optimal')
         
         for i in range(self.nhole):
             for k in range(self.npart):
                 denom_f = np.float64(self.e_orb[i] - self.e_orb[self.ncore+k])
-                tmp_f[k, i] *= np.float64(np.exp(-self.flow_param*(denom_f)**2))
-                   
-        
+                _tmp[k, i] *= np.float64(np.exp(-self.flow_param*(denom_f)**2))
+
         self.F_tilde = np.zeros((self.npart, self.nhole), dtype='float64')
-        self.F_tilde = self.F[self.part,self.hole].copy()
-        self.F_tilde += tmp_f
+        self.F_tilde = self.fock[self.part,self.hole].copy()
+        self.F_tilde += _tmp
+        del _tmp
         
     def H1_T1_C0(self):
         E = 0.0
-        E = 2. * np.einsum("am, ma ->", self.F_tilde[:, self.hc], self.T1[self.hc, :], dtype='float64', optimize='optimal')
-        temp = np.einsum("ev, ue -> uv", self.F_tilde[self.pv, self.ha], self.T1[self.ha, self.pv], dtype='float64', optimize='optimal') 
-        temp -= np.einsum("um, mv -> uv", self.F_tilde[self.pa, self.hc], self.T1[self.hc, self.pa], dtype='float64', optimize='optimal')
-        E += np.einsum("vu,uv ->", self.G1, temp, dtype='float64', optimize='optimal')
-        print(E)
+        E = 2. * np.einsum("am,ma->", self.F_tilde[:, self.hc], self.T1[self.hc, :], dtype='float64', optimize='optimal')
+        temp = np.einsum("ev,ue->uv", self.F_tilde[self.pv, self.ha], self.T1[self.ha, self.pv], dtype='float64', optimize='optimal') 
+        temp -= np.einsum("um,mv->uv", self.F_tilde[self.pa, self.hc], self.T1[self.hc, self.pa], dtype='float64', optimize='optimal')
+        E += np.einsum("vu,uv->", self.L1, temp, dtype='float64', optimize='optimal')
         return E
     
     def H1_T2_C0(self):
         E = 0.0
-        temp = np.einsum("ex, uvey -> uvxy", self.F_tilde[self.pv, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], dtype='float64', optimize='optimal')
-        temp -= np.einsum("vm, umxy -> uvxy", self.F_tilde[self.pa, self.hc], self.T2[self.ha, self. hc, self.pa, self.pa], dtype='float64', optimize='optimal')
-        E = np.einsum("xyuv, uvxy -> ", self.L2, temp, dtype='float64', optimize='optimal')
-        print(E)
+        temp = np.einsum("ex,uvey->uvxy", self.F_tilde[self.pv, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], dtype='float64', optimize='optimal')
+        temp -= np.einsum("vm,umxy->uvxy", self.F_tilde[self.pa, self.hc], self.T2[self.ha, self. hc, self.pa, self.pa], dtype='float64', optimize='optimal')
+        E = np.einsum("xyuv,uvxy->", self.L2, temp, dtype='float64', optimize='optimal')
         return E
     
     def H2_T1_C0(self):
         E = 0.0
-        temp = np.einsum("evxy, ue -> uvxy", self.V_tilde[self.pv, self.pa, self.ha, self.ha], self.T1[self.ha, self.pv], dtype='float64', optimize='optimal')
-        temp -= np.einsum("uvmy, mx -> uvxy", self.V_tilde[self.pa, self.pa, self.hc, self.ha], self.T1[self.hc, self.pa], dtype='float64', optimize='optimal')
-        E = np.einsum("xyuv, uvxy -> ", self.L2, temp, dtype='float64')
-        print(E)
+        temp = np.einsum("evxy,ue->uvxy", self.V_tilde[self.pv, self.pa, self.ha, self.ha], self.T1[self.ha, self.pv], dtype='float64', optimize='optimal')
+        temp -= np.einsum("uvmy,mx->uvxy", self.V_tilde[self.pa, self.pa, self.hc, self.ha], self.T1[self.hc, self.pa], dtype='float64', optimize='optimal')
+        E = np.einsum("xyuv,uvxy->", self.L2, temp, dtype='float64')
         return E
     
     def H2_T2_C0(self):
-        Eout = np.zeros(3, dtype='float64')
-        E = np.einsum("efmn, mnef ->", self.V_tilde[self.pv, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pv, self.pv], dtype='float64', optimize='optimal')
-        E += np.einsum("efmu, mvef, uv -> ", self.V_tilde[self.pv, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pv, self.pv], self.L1, dtype='float64', optimize='optimal')
-        E += np.einsum("vemn, mnue, uv -> ", self.V_tilde[self.pa, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pv], self.Eta, dtype='float64', optimize='optimal')
-        Eout[0] += E
-        Esmall = self.H2_T2_C0_T2small()
-        for i in range(3):
-            E += Esmall[i]
-            Eout[i] += Esmall[i]
-        print(E)
-        print(Eout)
-        return E, Eout
+        E = np.einsum("efmn,mnef->", self.V_tilde[self.pv, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pv, self.pv], dtype='float64', optimize='optimal')
+        E += np.einsum("efmu,mvef,uv->", self.V_tilde[self.pv, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pv, self.pv], self.L1, dtype='float64', optimize='optimal')
+        E += np.einsum("vemn,mnue,uv->", self.V_tilde[self.pa, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pv], self.Eta, dtype='float64', optimize='optimal')
+        E += self.H2_T2_C0_T2small()
+        return E
     
     def H2_T2_C0_T2small(self):
     #  Note the following blocks should be available in memory.
     #  H2: vvaa, aacc, avca, avac, vaaa, aaca
     #  T2: aavv, ccaa, caav, acav, aava, caaa
     #  S2: aavv, ccaa, caav, acav, aava, caaa
-        Esmall = np.zeros(3, dtype='float64')
+        E = 0.0
         # [H2, T2] L1 from aavv
-        Esmall[0] += 0.25 * np.einsum("efxu, yvef, uv, xy -> ", self.V_tilde[self.pv, self.pv, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pv], self.L1, self.L1, dtype='float64', optimize='optimal')
+        E += 0.25 * np.einsum("efxu,yvef,uv,xy -> ", self.V_tilde[self.pv, self.pv, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pv], self.L1, self.L1, dtype='float64', optimize='optimal')
         # [H2, T2] L1 from ccaa
-        Esmall[0] += 0.25 * np.einsum("vymn, mnux, uv, xy -> ", self.V_tilde[self.pa, self.pa, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pa], self.Eta, self.Eta, dtype='float64', optimize='optimal')
+        E += 0.25 * np.einsum("vymn,mnux,uv,xy -> ", self.V_tilde[self.pa, self.pa, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pa], self.Eta, self.Eta, dtype='float64', optimize='optimal')
         # [H2, T2] L1 from caav
-        temp = 0.5 * np.einsum("vemx, myue -> uxyv", self.V_tilde[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], dtype='float64', optimize='optimal')
-        temp += 0.5 * np.einsum("vexm, ymue -> uxyv", self.V_tilde[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], dtype='float64', optimize='optimal')
-        Esmall[0] += np.einsum("uxyv, uv, xy -> ", temp, self.Eta, self.L1, dtype='float64', optimize='optimal')
+        temp = 0.5 * np.einsum("vemx,myue-> uxyv", self.V_tilde[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], dtype='float64', optimize='optimal')
+        temp += 0.5 * np.einsum("vexm,ymue-> uxyv", self.V_tilde[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], dtype='float64', optimize='optimal')
+        E += np.einsum("uxyv, uv, xy -> ", temp, self.Eta, self.L1, dtype='float64', optimize='optimal')
         # [H2, T2] L1 from caaa and aaav
         temp = 0.25 * np.einsum("evwx, zyeu, wz -> uxyv", self.V_tilde[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], self.L1, dtype='float64', optimize='optimal')
         temp += 0.25 * np.einsum("vzmx, myuw, wz -> uxyv", self.V_tilde[self.pa, self.pa, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pa], self.Eta, dtype='float64', optimize='optimal')
-        Esmall[0] += np.einsum("uxyv, uv, xy ->", temp, self.Eta, self.L1, dtype='float64', optimize='optimal')
+        E += np.einsum("uxyv, uv, xy ->", temp, self.Eta, self.L1, dtype='float64', optimize='optimal')
         
         # <[Hbar2, T2]> C_4 (C_2)^2
         # HH
@@ -326,53 +311,28 @@ class DSRG_MRPT2(lib.StreamObject):
         temp -= 0.5 * np.einsum("uwmx, mvzy, wz -> uvxy", self.V_tilde[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.Eta, dtype='float64', optimize='optimal')
         temp -= 0.5 * np.einsum("vwmx, muyz, wz -> uvxy", self.V_tilde[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.Eta, dtype='float64', optimize='optimal')
         
-        Esmall[1] += np.einsum("uvxy, uvxy ->", temp, self.L2)
+        E += np.einsum("uvxy, uvxy ->", temp, self.L2)
         
         #
-        Esmall[2] += np.einsum("ewxy, uvez, xyzuwv ->", self.V_tilde[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L3, dtype='float64', optimize='optimal')
-        Esmall[2] -= np.einsum("uvmz, mwxy, xyzuwv ->", self.V_tilde[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.L3, dtype='float64', optimize='optimal')
+        E += np.einsum("ewxy, uvez, xyzuwv ->", self.V_tilde[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L3, dtype='float64', optimize='optimal')
+        E -= np.einsum("uvmz, mwxy, xyzuwv ->", self.V_tilde[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.L3, dtype='float64', optimize='optimal')
         
-        return Esmall
+        return E
     
     def kernel(self):
-        if isinstance(self.verbose, logger.Logger):
-            log = self.verbose
-        else:
-            log = logger.Logger(self.stdout, self.verbose)
-        time0 = (logger.process_clock(), logger.perf_counter())
-
         self.semi_canonicalize()
-
-        dm1, dm2, dm3 = fci.rdm.make_dm123('FCI3pdm_kern_sf',
-                                               self.load_ci(), self.load_ci(), self.nact, self.nelecas)
-
-        dms = {'1': dm1, '2': dm2, '3': dm3}
-        time1 = log.timer('RDM generation', *time0)
-
-        eris = NotImplemented
-        time1 = log.timer('integral transformation', *time1)
-
+        
         self.compute_T2()
         self.compute_T1()
         self.renormalize_V()
         self.renormalize_F()
 
-        e_F_T1 = F_T1(self, dms, eris)
-        logger.note(self, "<[F,T1]>  ,   E = %.14f", e_F_T1)
-        time1 = log.timer('<[F,T1]>', *time1)
-        e_F_T2 = F_T2(self, dms, eris)
-        logger.note(self, "<[F,T2]>  ,   E = %.14f", e_F_T2)
-        time1 = log.timer('<[F,T2]>', *time1)
-        e_V_T1 = V_T1(self, dms, eris)
-        logger.note(self, "<[V,T1]>  ,   E = %.14f", e_V_T1)
-        time1 = log.timer('<[V,T1]>', *time1)
-        e_V_T2 = V_T2(self, dms, eris)
-        logger.note(self, "<[V,T2]>  ,   E = %.14f", e_V_T2)
-        time1 = log.timer('<[V,T2]>', *time1)
-
-        self.e_corr = e_F_T1 + e_F_T2 + e_V_T1 + e_V_T2
-        logger.note(self, "DSRG-MRPT2 correlation energy = %.14f", self.e_corr)
-        log.timer('DSRG-MRPT2', *time0)
+        self.e_h1_t1 = self.H1_T1_C0()
+        self.e_h1_t2 = self.H1_T2_C0()
+        self.e_h2_t1 = self.H2_T1_C0()
+        self.e_h2_t2 = self.H2_T2_C0()
+        self.e_corr = self.e_h1_t1 + self.e_h1_t2 + self.e_h2_t1 + self.e_h2_t2
+        self.e_tot = self.mc.e_tot + self.e_corr
 
         return self.e_corr
 
@@ -387,17 +347,53 @@ if __name__ == '__main__':
     from pyscf import scf
     from pyscf import mcscf
 
-    mol = gto.M(
-        atom = '''
-    N 0 0 0
-    N 0 1.4 0
-    ''',
-        basis = '6-31g', spin=0, charge=0, symmetry=False
-    )
+    if (False):
+        mol = gto.M(
+            atom = '''
+        N 0 0 0
+        N 0 1.4 0
+        ''',
+            basis = '6-31g', spin=0, charge=0, symmetry=False
+        )
 
-    rhf = scf.RHF(mol)
-    rhf.kernel()
-    casci = mcscf.CASCI(rhf, 6, 6)
-    casci.kernel()
-    e_dsrg_mrpt2 = DSRG_MRPT2(casci).kernel()
-    assert numpy.isclose(e_dsrg_mrpt2, -0.127274453305632)
+        rhf = scf.RHF(mol)
+        rhf.kernel()
+        casci = mcscf.CASCI(rhf, 6, 6)
+        casci.kernel()
+        e_dsrg_mrpt2 = DSRG_MRPT2(casci).kernel()
+        assert np.isclose(e_dsrg_mrpt2, -0.127274453305632)
+
+        mol = gto.M(
+            verbose = 2,
+            atom = '''
+        H 0 0 0
+        F 0 0 1.5
+        ''',
+            basis = 'sto-3g', spin=0, charge=0
+        )
+        rhf = scf.RHF(mol)
+        rhf.kernel()
+        casci = mcscf.CASCI(rhf, 4, 6)
+        casci.kernel()
+        dsrg = DSRG_MRPT2(casci)
+        e_dsrg_mrpt2 = dsrg.kernel()
+        print(e_dsrg_mrpt2)
+        print(dsrg.e_tot)
+
+    mol = gto.M(
+        verbose = 2,
+        atom = '''
+    O 0 0 0
+    O 0 0 1.251
+    ''',
+        basis = 'cc-pvdz', spin=0, charge=0
+    )
+    mf = scf.RHF(mol)
+    mf.kernel()
+    mc = mcscf.CASSCF(mf, 6, 8)
+    mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
+    mc.kernel() 
+    dsrg = DSRG_MRPT2(mc)
+    e_dsrg_mrpt2 = dsrg.kernel()
+    print(e_dsrg_mrpt2)
+    print(dsrg.e_tot)

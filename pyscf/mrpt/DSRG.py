@@ -160,6 +160,29 @@ class DSRG:
                 print(f'CASSCF time:                 {tf - ti:15.7f} s')
                 print(f"CASSCF Energy:               {self.e_casscf.real:15.7f} Eh")
                 print('='*47)
+    
+    def run_casci(self, cas, transform = True): # cas is (e, o)
+        ti = time.time()
+        if (self.verbose):
+            print('='*47)
+            print('{:^47}'.format('PySCF CASCI interface'))
+            print('='*47)
+        
+        self.casscf = pyscf.mcscf.CASCI(self.rhf, cas[1], cas[0])
+        self.casscf.conv_tol = 1e-8
+        self.casscf.conv_tol_grad = 1e-7
+        #self.casscf.max_stepsize = 0.03
+        self.res = self.casscf.kernel() 
+        self.e_casscf = self.res[0]
+
+        if (transform):
+            self.ao2mo(self.res[3])
+
+            if (self.verbose):
+                tf = time.time()
+                print(f'CASCI time:                 {tf - ti:15.7f} s')
+                print(f"CASCI Energy:               {self.e_casscf.real:15.7f} Eh")
+                print('='*47)
             
                         
     def H1_T1_C0(self):
