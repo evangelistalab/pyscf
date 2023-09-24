@@ -392,8 +392,11 @@ if __name__ == '__main__':
     mf.kernel()
     mc = mcscf.CASSCF(mf, 6, 8)
     mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
-    mc.kernel() 
+    mc.mc2step() 
     dsrg = DSRG_MRPT2(mc)
     e_dsrg_mrpt2 = dsrg.kernel()
+    print(mc.e_tot)
+    assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)
     print(e_dsrg_mrpt2)
+    assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6)
     print(dsrg.e_tot)
