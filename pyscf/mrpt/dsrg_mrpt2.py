@@ -153,6 +153,17 @@ class DSRG_MRPT2(lib.StreamObject):
             self.ci_vecs = [mc.ci]
 
 
+        if (isinstance(mc.fcisolver, mcscf.addons.StateAverageFCISolver)):
+            self.state_average = True
+            self.state_average_weights = mc.fcisolver.weights
+            self.state_average_nstates = mc.fcisolver.nstates
+            self.ci_vecs = mc.ci
+        else:
+            self.state_average = False
+            self.state_average_weights = [1.0]
+            self.state_average_nstates = 1
+            self.ci_vecs = [mc.ci]
+
         self.nao = mc.mol.nao
         self.ncore = mc.ncore
         self.nact  = mc.ncas
@@ -185,8 +196,7 @@ class DSRG_MRPT2(lib.StreamObject):
         Within this function, we generate semicanonicalizer, RDMs, cumulant, F, and V.
         '''
         # get_fock() uses the state-averaged RDM by default, via mc.fcisolver.make_rdm1()
-        _fock_canon = np.einsum("pi,pq,qj->ij", self.mc.mo_coeff, self.mc.get_fock(), self.mc.mo_coeff, optimize='optimal')
-        
+        _fock_canon = np.einsum("pi,pq,qj->ij", self.mc.mo_coeff, self.mc.get_fock(), self.mc.mo_coeff, optimize='optimal') 
         self.semicanonicalizer = np.zeros((self.nao, self.nao), dtype='float64')
         _, self.semicanonicalizer[self.core,self.core] = np.linalg.eigh(_fock_canon[self.core,self.core])
         _, self.semicanonicalizer[self.active,self.active] = np.linalg.eigh(_fock_canon[self.active,self.active])
