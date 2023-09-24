@@ -57,17 +57,26 @@ def regularized_denominator(x, s):
     else:
         return (1. - np.exp(-s * x**2)) / x
     
-def get_SF_RDM(ci_vec, norb, nelec):
+def get_SF_RDM_SA(ci_vecs, weights, norb, nelec):
     '''
-    Returns the spin-free active space 1-/2-/3-RDM.
+    Returns the state-averaged spin-free active space 1-/2-/3-RDM.
     Reordered 2-rdm <p\dagger r\dagger s q> in Pyscf is stored as: dm2[pqrs]
     Forte stores it as rdm[prqs]
     '''
-    dm1, dm2, dm3 = fci.rdm.make_dm123('FCI3pdm_kern_sf', ci_vec, ci_vec, norb, nelec)
-    dm1, dm2, dm3 = fci.rdm.reorder_dm123(dm1, dm2, dm3)
-    G1 = np.einsum("pq -> qp", dm1)
-    G2 = np.einsum("pqrs -> prqs", dm2)
-    G3 = np.einsum("pqrstu -> prtqsu", dm3)
+    G1 = np.zeros((norb,)*2)
+    G2 = np.zeros((norb,)*4)
+    G3 = np.zeros((norb,)*6)
+
+    for i in range(len(ci_vecs)):
+        # Unlike fcisolver.make_rdm1, make_dm123 doesn't automatically return the state-averaged RDM.
+        _dm1, _dm2, _dm3 = fci.rdm.make_dm123('FCI3pdm_kern_sf', ci_vecs[i], ci_vecs[i], norb, nelec)
+        _dm1, _dm2, _dm3 = fci.rdm.reorder_dm123(_dm1, _dm2, _dm3)
+        _G1 = np.einsum("pq -> qp", _dm1)
+        _G2 = np.einsum("pqrs -> prqs", _dm2)
+        _G3 = np.einsum("pqrstu -> prtqsu", _dm3)
+        G1 += weights[i] * _G1
+        G2 += weights[i] * _G2
+        G3 += weights[i] * _G3
     return G1, G2, G3
 
 def get_SF_cu2(G1, G2):
@@ -121,6 +130,17 @@ class DSRG_MRPT2(lib.StreamObject):
         
         if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
 
+        if (isinstance(mc.fcisolver, mcscf.addons.StateAverageFCISolver)):
+            self.state_average = True
+            self.state_average_weights = mc.fcisolver.weights
+            self.state_average_nstates = mc.fcisolver.nstates
+            self.ci_vecs = mc.ci
+        else:
+            self.state_average = False
+            self.state_average_weights = [1.0]
+            self.state_average_nstates = 1
+            self.ci_vecs = [mc.ci]
+
         self.nao = mc.mol.nao
         self.ncore = mc.ncore
         self.nact  = mc.ncas
@@ -159,7 +179,7 @@ class DSRG_MRPT2(lib.StreamObject):
         '''
         Within this function, we generate semicanonicalizer, RDMs, cumulant, F, and V.
         '''
-        
+        # get_fock() uses the state-averaged RDM by default, via mc.fcisolver.make_rdm1()
         _fock_canon = np.einsum("pi, pq, qj->ij", self.mc.mo_coeff, self.mc.get_fock(), self.mc.mo_coeff, dtype='float64', optimize='optimal')
         
         self.semicanonicalizer = np.zeros((self.nao, self.nao), dtype='float64')
@@ -168,7 +188,7 @@ class DSRG_MRPT2(lib.StreamObject):
         _, self.semicanonicalizer[self.virt,self.virt] = np.linalg.eigh(_fock_canon[self.virt,self.virt])
         
         # RDMs in semi-canonical basis.
-        _G1_canon, _G2_canon, _G3_canon = get_SF_RDM(self.mc.ci, self.nact, self.nelecas)
+        _G1_canon, _G2_canon, _G3_canon = get_SF_RDM_SA(self.ci_vecs, self.state_average_weights, self.nact, self.nelecas)
         _G1_semi_canon = np.einsum("pi,pq,qj->ij", self.semicanonicalizer[self.active,self.active], _G1_canon, self.semicanonicalizer[self.active,self.active], dtype='float64', optimize='optimal')
         _G2_semi_canon = np.einsum("pi,qj,rk,sl,pqrs->ijkl", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G2_canon, dtype='float64', optimize='optimal')
         _G3_semi_canon = np.einsum("pi,qj,rk,sl,tm,un,pqrstu->ijklmn", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G3_canon, dtype='float64', optimize='optimal')
