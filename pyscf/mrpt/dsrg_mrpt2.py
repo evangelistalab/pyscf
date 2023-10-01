@@ -526,10 +526,9 @@ class DSRG_MRPT2(lib.StreamObject):
     
     def E_V_T2_CCVV(self):
         E = 0.0
+        B_Lfn = self.Bpq[:, self.pv, self.hc].copy()
         for m in range(self.ncore):
             B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()
-            B_Lfn = self.Bpq[:, self.pv, self.hc].copy()
-            
             J_m = np.einsum("Le, Lfn->efn", B_Le, B_Lfn, optimize='optimal')
             JK_m = 2.0 * J_m - np.einsum("efn->fen", J_m.copy())
             
@@ -545,12 +544,10 @@ class DSRG_MRPT2(lib.StreamObject):
     
     def E_V_T2_CAVV(self):
         E = 0.0
+        B_Lfv = self.Bpq[:, self.pv, self.ha].copy()
         for m in range(self.ncore):
-            B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()
-            B_Lfv = self.Bpq[:, self.pv, self.ha].copy()
-            
+            B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()      
             J_m = np.einsum("Le, Lfv->efv", B_Le, B_Lfv, optimize='optimal')
-            
             JK_m = 2.0 * J_m - np.einsum("efv->fev", J_m.copy())
             
             for u in range(self.nact):
