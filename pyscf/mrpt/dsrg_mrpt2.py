@@ -19,9 +19,7 @@
 #
 
 import numpy as np
-import tempfile
-import h5py
-from pyscf import lib
+from pyscf import lib, mcscf
 from pyscf.lib import logger
 from pyscf import fci
 from pyscf.mcscf import mc_ao2mo
@@ -115,16 +113,16 @@ class DSRG_MRPT2(lib.StreamObject):
             the Hamiltonian is block-diagonalized.
         relax : str (default: 'none')
             Reference relaxation method. Options: 'none', 'once', 'twice', 'iterate'.
-        Density_Fitting: bool (default: False)
+        density_fit: bool (default: False)
             To control whether density fitting to be used.
             For CCVV, CAVV, and CCAV terms, V and T2 will not be stored explicitly.
-        Batch: bool(default: False)
+        batch: bool(default: False)
             To control whether the CCVV term to be computed in batches.
             CCVV: for a given m and n, form B(ef) = Bm(L|e) * Bn(L|f)
             This is only available with density fitting.
             
             (Bpq is larger than Bme. I am not sure whether batching would provide any benefit since we always store Bpq.)
-        Verbose: bool(default: False)
+        verbose: bool(default: False)
 
     Examples:
 
@@ -133,25 +131,17 @@ class DSRG_MRPT2(lib.StreamObject):
     >>> DSRG_MRPT2(mc, s=0.5).kernel()
     -0.15708345625685638
     '''
-    def __init__(self, mc, root=0, s=0.5, relax='none', Density_Fitting = False, Batch = False, Verbose = False):
+    def __init__(self, mc, root=0, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, density_fit=False, batch=False, verbose=False):
+        if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
         self.mc = mc
         self.root = root
         self.flow_param = s
         self.relax = relax
-        
-        if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
-        
-        if (isinstance(mc.fcisolver, mcscf.addons.StateAverageFCISolver)):
-            self.state_average = True
-            self.state_average_weights = mc.fcisolver.weights
-            self.state_average_nstates = mc.fcisolver.nstates
-            self.ci_vecs = mc.ci
-        else:
-            self.state_average = False
-            self.state_average_weights = [1.0]
-            self.state_average_nstates = 1
-            self.ci_vecs = [mc.ci]
-
+        if (relax not in ['none','once','twice','iterate']):
+            raise RuntimeError(f"Relaxation method '{relax}' not recognized. Supported methods are 'none', 'once', 'twice', and 'iterate'.")
+        self.df = density_fit
+        self.batch = batch
+        self.verbose = verbose
 
         if (isinstance(mc.fcisolver, mcscf.addons.StateAverageFCISolver)):
             self.state_average = True
@@ -163,6 +153,23 @@ class DSRG_MRPT2(lib.StreamObject):
             self.state_average_weights = [1.0]
             self.state_average_nstates = 1
             self.ci_vecs = [mc.ci]
+
+        if (relax == 'none'):
+            self.nrelax = 0
+        elif (relax == 'once'):
+            self.nrelax = 1
+        elif (relax == 'twice'):
+            self.nrelax = 2
+        elif (relax == 'iterate'):
+            self.nrelax = relax_maxiter
+
+        self.relax_ref = (self.nrelax > 0)
+
+        # [todo]: remove this restriction
+        if (self.relax_ref and self.df):
+            raise RuntimeError('Relaxation is not supported with density fitting.')
+
+        self.converged = False
 
         self.nao = mc.mol.nao
         self.ncore = mc.ncore
@@ -187,9 +194,8 @@ class DSRG_MRPT2(lib.StreamObject):
         self.pv = slice(self.nact, self.nact + self.nvirt)
         
         self.e_corr = None
-        self.df = Density_Fitting
-        self.batch = Batch
-        self.verbose = Verbose
+
+        _, self.e_core = mc.get_h1eff()
     
     def semi_canonicalize(self):
         '''
@@ -561,7 +567,6 @@ class DSRG_MRPT2(lib.StreamObject):
         if (self.verbose):
             print(f"VT2_CAVV (DF), {E}") 
         return E
-
         
     def E_V_T2_CCAV(self):
         E = 0.0
@@ -588,8 +593,168 @@ class DSRG_MRPT2(lib.StreamObject):
             print(f"VT2_CCAV (DF), {E}") 
         return E
     
-    def kernel(self):
-        self.semi_canonicalize()
+    def H1_T_C1a_smallS(self, C1):
+        C1 += 1.00 * np.einsum('ev,ue->uv', self.F_tilde[self.pv, self.ha], self.T1[self.ha,self.pv], optimize='optimal')
+        C1 -= 1.00 * np.einsum('um,mv->uv', self.F_tilde[self.pa, self.hc], self.T1[self.hc,self.pa], optimize='optimal')
+        C1 += 1.00 * np.einsum('em,umve->uv', self.F_tilde[self.pv, self.hc], self.S[self.ha,self.hc,self.pa,self.pv], optimize='optimal')
+        C1 += 1.00 * np.einsum('xm,muxv->uv', self.F_tilde[self.pa, self.hc], self.S[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
+        C1 += 0.50 * np.einsum('ex,yuev,xy->uv', self.F_tilde[self.pv, self.ha], self.S[self.ha,self.ha,self.pv,self.pa], self.L1, optimize='optimal')
+        #C1 += 0.50 * np.einsum('wx,uyvw,xy->uv', self.F_tilde[self.pa, self.ha], self.S[self.ha,self.ha,self.pa,self.pa], self.L1, optimize='optimal')
+        #C1["uv"] += 0.5 * H1["wx"] * S2["uyvw"] * L1_["xy"]; (sadsrg_comm.cc::877)
+        C1 -= 0.50 * np.einsum('ym,muxv,xy->uv', self.F_tilde[self.pa, self.hc], self.S[self.hc,self.ha,self.pa,self.pa], self.L1, optimize='optimal')
+        #C1 -= 0.50 * np.einsum('yw,uwvx,xy->uv', self.F_tilde[self.pa, self.ha], self.S[self.ha,self.ha,self.pa,self.pa], self.L1, optimize='optimal')
+        # C1["uv"] -= 0.5 * H1["yw"] * S2["uwvx"] * L1_["xy"]; (ibid, 881)
+
+    def H2_T_C1a_smallS(self, C1):
+        C1 += 1.00 * np.einsum('uemz,mwue->wz', self.V[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], optimize='optimal')
+        C1 += 1.00 * np.einsum('uezm,wmue->wz', self.V[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
+        C1 += 1.00 * np.einsum('vumz,mwvu->wz', self.V[self.pa, self.pa, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pa], optimize='optimal')
+        
+        C1 -= 1.00 * np.einsum('wemu,muze->wz', self.V[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], optimize='optimal')
+        C1 -= 1.00 * np.einsum('weum,umze->wz', self.V[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
+        C1 -= 1.00 * np.einsum('ewvu,vuez->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], optimize='optimal')
+
+        temp =  0.5 * np.einsum('wvef,efzu->wzuv', self.S[self.ha, self.ha, self.pv, self.pv], self.V[self.pv, self.pv, self.ha, self.ha], optimize='optimal')
+        temp += 0.5 * np.einsum('wvex,exzu->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
+        temp += 0.5 * np.einsum('vwex,exuz->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
+        #temp += 0.5 * np.einsum('wvxy,xyzu->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
+
+        temp -= 0.5 * np.einsum('wmue,vezm->wzuv', self.S[self.ha, self.hc, self.pa, self.pv], self.V[self.pa, self.pv, self.ha, self.hc], optimize='optimal')
+        temp -= 0.5 * np.einsum('mwxu,xvmz->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
+
+        temp -= 0.5 * np.einsum('mwue,vemz->wzuv', self.S[self.hc, self.ha, self.pa, self.pv], self.V[self.pa, self.pv, self.hc, self.ha], optimize='optimal')
+        temp -= 0.5 * np.einsum('mwux,vxmz->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
+
+        temp += 0.25 * np.einsum('jwxu,xy,yvjz->wzuv', self.S[:, self.ha, self.pa, self.pa], self.L1, self.V[self.pa, self.pa, :, self.ha], optimize='optimal')
+        temp -= 0.25 * np.einsum('ywbu,xy,bvxz->wzuv', self.S[self.ha, self.ha, :, self.pa], self.L1, self.V[:, self.pa, self.ha, self.ha], optimize='optimal')
+        temp -= 0.25 * np.einsum('wybu,xy,bvzx->wzuv', self.S[self.ha, self.ha, :, self.pa], self.L1, self.V[:, self.pa, self.ha, self.ha], optimize='optimal')
+
+        C1 += np.einsum('wzuv,uv->wz', temp, self.L1, optimize='optimal')
+        temp = np.zeros((self.nact,)*4)
+
+        temp -= 0.5 * np.einsum('mnzu,wvmn->wzuv', self.S[self.hc, self.hc, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.hc], optimize='optimal')
+        temp -= 0.5 * np.einsum('mxzu,wvmx->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
+        temp -= 0.5 * np.einsum('mxuz,vwmx->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
+        #temp -= 0.5 * np.einsum('xyzu,wvxy->wzuv', self.S[self.hc, self.hc, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.hc], optimize='optimal')
+
+        temp += 0.5 * np.einsum('vmze,weum->wzuv', self.S[self.ha, self.hc, self.pa, self.pv], self.V[self.pa, self.pv, self.ha, self.hc], optimize='optimal')
+        temp += 0.5 * np.einsum('xvez,ewxu->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
+
+        temp += 0.5 * np.einsum('mvze,wemu->wzuv', self.S[self.hc, self.ha, self.pa, self.pv], self.V[self.pa, self.pv, self.hc, self.ha], optimize='optimal')
+        temp += 0.5 * np.einsum('vxez,ewux->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
+
+        temp -= 0.25 * np.einsum('yvbz,xy,bwxu->wzuv', self.S[self.ha, self.ha, :, self.pa], self.Eta, self.V[:, self.pa, self.ha, self.ha], optimize='optimal')
+        temp += 0.25 * np.einsum('jvxz,xy,ywju->wzuv', self.S[:, self.ha, self.pa, self.pa], self.Eta, self.V[self.pa, self.pa, :, self.ha], optimize='optimal')
+        temp += 0.25 * np.einsum('jvzx,xy,wyju->wzuv', self.S[:, self.ha, self.pa, self.pa], self.Eta, self.V[self.pa, self.pa, :, self.ha], optimize='optimal')
+
+        C1 += np.einsum('wzuv,uv->wz', temp, self.Eta, optimize='optimal')
+
+        C1 += 0.50 * np.einsum('vujz,jwyx,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
+        C1 += 0.50 * np.einsum('auzx,wvay,xyuv->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
+        C1 -= 0.50 * np.einsum('auxz,wvay,xyuv->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
+        C1 -= 0.50 * np.einsum('auxz,vway,xyvu->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
+
+        C1 -= 0.50 * np.einsum('bwyx,vubz,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
+        C1 -= 0.50 * np.einsum('wuix,ivzy,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.S[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
+        C1 += 0.50 * np.einsum('uwix,ivzy,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
+        C1 += 0.50 * np.einsum('uwix,ivyz,xyvu->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
+
+        C1 += 0.50 * np.einsum('avxy,uwaz,xyuv->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
+        C1 -= 0.50 * np.einsum('uviy,iwxz,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.S[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
+
+    def H2_T_C1a_smallG(self, C1):
+        G2 = 2.0 * self.V - self.V.swapaxes(2,3) # we definitely don't need to store all of this
+        C1 += np.einsum('ma,uavm->uv', self.T1[self.hc,:], G2[self.pa,:,self.ha,self.hc], optimize='optimal')
+        C1 += 0.50 * np.einsum('xe,yx,uevy->uv', self.T1[self.ha,self.pv], self.L1, G2[self.pa,self.pv,self.ha,self.ha], optimize='optimal')
+        C1 -= 0.50 * np.einsum('mx,xy,uyvm->uv', self.T1[self.hc,self.pa], self.L1, G2[self.pa,self.pa,self.ha,self.hc], optimize='optimal')
+
+        C1 += 0.50 * np.einsum('wezx,uvey,xyuv->wz', G2[self.pa,self.pv,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pa], self.L2, optimize='optimal')
+        C1 -= 0.50 * np.einsum('wuzm,mvxy,xyuv->wz', G2[self.pa,self.pa,self.ha,self.hc], self.T2[self.hc,self.ha,self.pa,self.pa], self.L2, optimize='optimal')
+
+    def H_T_C2a_smallS(self, C2):
+        C2 += np.einsum('efxy,uvef->uvxy', self.V[self.pv,self.pv,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pv], optimize='optimal')
+        #C2["uvxy"] += H2["wzxy"] * T2["uvwz"];
+        C2 += np.einsum('ewxy,uvew->uvxy', self.V[self.pv,self.pa,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pa], optimize='optimal')
+        C2 += np.einsum('ewyx,vuew->uvxy', self.V[self.pv,self.pa,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pa], optimize='optimal')
+
+        C2 += np.einsum('uvmn,mnxy->uvxy', self.V[self.pa,self.pa,self.hc,self.hc], self.T2[self.hc,self.hc,self.pa,self.pa], optimize='optimal')
+        #C2["uvxy"] += H2["uvwz"] * T2["wzxy"];
+        C2 += np.einsum('vumw,mwyx->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
+        C2 += np.einsum('uvmw,mwxy->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
+
+        temp = np.einsum('ax,uvay->uvxy', self.F_tilde[:,self.ha], self.T2[self.ha,self.ha,:,self.pa], optimize='optimal')
+        temp -= np.einsum('ui,ivxy->uvxy', self.F_tilde[self.pa,:], self.T2[:,self.ha,self.pa,self.pa], optimize='optimal')
+        temp += np.einsum('ua,avxy->uvxy', self.T1[self.ha,:], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
+        temp -= np.einsum('ix,uviy->uvxy', self.T1[:,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
+
+        temp -= 0.50 * np.einsum('wz,vuaw,azyx->uvxy', self.L1, self.T2[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
+        temp -= 0.50 * np.einsum('wz,izyx,vuiw->uvxy', self.Eta, self.T2[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
+
+        temp += np.einsum('uexm,vmye->uvxy', self.V[self.pa,self.pv,self.ha,self.hc], self.S[self.ha,self.hc,self.pa,self.pv], optimize='optimal')
+        temp += np.einsum('wumx,mvwy->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.S[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
+
+        temp += 0.50 * np.einsum('wz,zvay,auwx->uvxy', self.L1, self.S[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
+        temp -= 0.50 * np.einsum('wz,ivwy,zuix->uvxy', self.L1, self.S[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
+
+        temp -= np.einsum('uemx,vmye->uvxy', self.V[self.pa,self.pv,self.hc,self.ha], self.T2[self.ha,self.hc,self.pa,self.pv], optimize='optimal')
+        temp -= np.einsum('uwmx,mvwy->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
+
+        temp -= 0.50 * np.einsum('wz,zvay,auxw->uvxy', self.L1, self.T2[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
+        temp += 0.50 * np.einsum('wz,ivwy,uzix->uvxy', self.L1, self.T2[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
+
+        temp -= np.einsum('vemx,muye->uvxy', self.V[self.pa,self.pv,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pv], optimize='optimal')
+        temp -= np.einsum('vwmx,muyw->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
+
+        temp -= 0.50 * np.einsum('wz,uzay,avxw->uvxy', self.L1, self.T2[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
+        temp += 0.50 * np.einsum('wz,iuyw,vzix->uvxy', self.L1, self.T2[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
+
+        C2 += temp
+        C2 += np.einsum('uvxy->vuyx', temp, optimize='optimal')
+
+    def compute_hbar(self, alpha):
+        hbar1_temp = np.zeros((self.nact,)*2)
+
+        self.H1_T_C1a_smallS(hbar1_temp)
+        self.H2_T_C1a_smallS(hbar1_temp)
+        self.H2_T_C1a_smallG(hbar1_temp)
+
+        self.hbar1 += alpha * hbar1_temp 
+        self.hbar1 += alpha * hbar1_temp.T
+
+        hbar2_temp = np.zeros((self.nact,)*4)
+        self.H_T_C2a_smallS(hbar2_temp)
+        
+        self.hbar2 += alpha * hbar2_temp
+        self.hbar2 += alpha * np.einsum('uvxy->xyuv', hbar2_temp, optimize='optimal')
+
+        hbar1_temp = np.einsum('efzm,wmef->wz', self.V[self.pv, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pv, self.pv], optimize='optimal')
+        hbar1_temp -= np.einsum('wemn,mnze->wz', self.V[self.pa, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pv], optimize='optimal')
+
+        self.hbar1 += alpha * hbar1_temp
+        self.hbar1 += alpha * hbar1_temp.T
+        del hbar1_temp
+
+        self.deGNO_ints()
+
+    def deGNO_ints(self):
+        hbar2_temp = 2*self.hbar2 - np.einsum('pqrs->pqsr', self.hbar2, optimize='optimal')
+
+        self.e_scalar1 = - np.einsum('vu,uv->', self.hbar1, self.L1)
+        self.e_scalar2 = 0.25 * np.einsum('uv,vyux,xy->', self.L1, hbar2_temp, self.L1) - 0.5 * np.einsum('xyuv,uvxy->', self.hbar2, self.L2)
+        self.relax_e_scalar = self.e_scalar1 + self.e_scalar2
+
+        self.hbar1 -= 0.5 * np.einsum('uxvy,yx->uv', hbar2_temp, self.L1)
+
+        del hbar2_temp
+
+        self.hbar1_canon = np.einsum('ip,pq,jq->ij', self.semicanonicalizer[self.active, self.active], self.hbar1, self.semicanonicalizer[self.active, self.active], optimize='optimal')
+        self.hbar2_canon = np.einsum('ip,jq,pqrs,kr,ls->ijkl', self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], self.hbar2, self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], optimize='optimal')
+
+
+    def drsg_mrpt2_iteration(self):
+        if (self.relax_ref):
+            self.hbar1 = self.fock[self.active, self.active].copy()
+            self.hbar2 = self.V[self.pa, self.pa, self.ha, self.ha].copy()
         
         self.compute_T2()
         self.compute_T1()
@@ -603,6 +768,7 @@ class DSRG_MRPT2(lib.StreamObject):
             self.e_h2_t2_small = self.H2_T2_C0_T2small_df()
             self.e_h2_t2_cavv = self.E_V_T2_CAVV()
             self.e_h2_t2_ccav = self.E_V_T2_CCAV()
+            # [todo]: unified interface for batching: give a list of indices to batch over
             if (self.batch):
                 self.e_h2_t2_ccvv = self.E_V_T2_CCVV_batch()
             else:
@@ -610,8 +776,15 @@ class DSRG_MRPT2(lib.StreamObject):
             self.e_h2_t2 = self.e_h2_t2_small + self.e_h2_t2_cavv + self.e_h2_t2_ccav + self.e_h2_t2_ccvv
         else:
             self.e_h2_t2 = self.H2_T2_C0()
+
+        if (self.relax_ref): self.compute_hbar(alpha=0.5)
         self.e_corr = self.e_h1_t1 + self.e_h1_t2 + self.e_h2_t1 + self.e_h2_t2
         self.e_tot = self.mc.e_tot + self.e_corr
+
+    def kernel(self):
+        self.semi_canonicalize()
+        self.drsg_mrpt2_iteration()
+
         return self.e_corr
 
 # register DSRG_MRPT2 in MCSCF
@@ -625,7 +798,9 @@ if __name__ == '__main__':
     from pyscf import scf
     from pyscf import mcscf
 
-    if (False):
+    test = 2
+
+    if (test == 1):
         mol = gto.M(
             atom = '''
         N 0 0 0
@@ -640,7 +815,7 @@ if __name__ == '__main__':
         casci.kernel()
         e_dsrg_mrpt2 = DSRG_MRPT2(casci).kernel()
         assert np.isclose(e_dsrg_mrpt2, -0.127274453305632)
-
+    elif (test == 2):
         mol = gto.M(
             verbose = 2,
             atom = '''
@@ -653,38 +828,61 @@ if __name__ == '__main__':
         rhf.kernel()
         casci = mcscf.CASCI(rhf, 4, 6)
         casci.kernel()
-        dsrg = DSRG_MRPT2(casci)
+        print(f"{casci.e_tot=}")
+        dsrg = DSRG_MRPT2(casci, relax='once')
         e_dsrg_mrpt2 = dsrg.kernel()
         print(e_dsrg_mrpt2)
         print(dsrg.e_tot)
+        
+        print(f"{dsrg.e_scalar1=}")
+        try:
+            assert (np.isclose(dsrg.e_scalar1, 2.5191661113766357, atol=1e-6))
+        except:
+            print(f'Warning: dsrg.e_scalar1 is not close to 2.5191661113766357')
+        print(f"{dsrg.e_scalar2=}")
 
-    mol = gto.M(
-        verbose = 2,
-        atom = '''
-    O 0 0 0
-    O 0 0 1.251
-    ''',
-        basis = 'cc-pvdz', spin=0, charge=0
-    )
-    mf = scf.RHF(mol).density_fit()
-    mf.kernel()
-    mc = mcscf.CASSCF(mf, 6, 8).density_fit()
-    mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
-    mc.mc2step() 
-    dsrg = DSRG_MRPT2(mc, Density_Fitting = True, Batch = False, Verbose = True)
-    e_dsrg_mrpt2 = dsrg.kernel()
-    print(f"casscf: {mc.e_tot}")
-    #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
-    assert np.isclose(mc.e_tot, -149.675391362112094, atol = 1e-6) # This is for DF
-    
-    # Here are tests for DF
-    assert np.isclose(dsrg.e_h2_t2_ccvv, -0.014939333740318, atol = 1e-6) # This is for DF
-    assert np.isclose(dsrg.e_h2_t2_cavv, -0.042801582864407, atol = 1e-6) # This is for DF
-    assert np.isclose(dsrg.e_h2_t2_ccav, -0.003545083460275, atol = 1e-6) # This is for DF
-    
-    print(f"DSRG-MRPT2 correlation energy: {e_dsrg_mrpt2}")
-    #assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6) This is for direct computation
-    assert np.isclose(e_dsrg_mrpt2, -0.257376059270690, atol=1e-6) # This is for DF
-    
-    print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
-    assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF
+        try:
+            assert (np.isclose(dsrg.e_scalar2, 11.143089786391007, atol=1e-6))
+        except:
+            print(f'Warning: dsrg.e_scalar2 is not close to 11.143089786391007')
+        print(f"{dsrg.relax_e_scalar=}")
+        print(f"{dsrg.e_core=}")
+        from pyscf import fci
+        #_eri = fci.direct_spin1.absorb_h1e(dsrg.hbar1_canon, dsrg.hbar2_canon, 4, 6, .5)
+        ecore = dsrg.mc.e_tot + dsrg.relax_e_scalar + e_dsrg_mrpt2
+        #ecore = 0
+        print(f"{ecore=}")
+        e, fcivec = fci.direct_spin1.kernel(dsrg.hbar1_canon, dsrg.hbar2_canon.swapaxes(1,2), 4, 6,
+                                            ecore=ecore, verbose=5)
+        print('Total energy', e) 
+    elif (test==3):
+        mol = gto.M(
+            verbose = 2,
+            atom = '''
+        O 0 0 0
+        O 0 0 1.251
+        ''',
+            basis = 'cc-pvdz', spin=0, charge=0
+        )
+        mf = scf.RHF(mol).density_fit()
+        mf.kernel()
+        mc = mcscf.CASSCF(mf, 6, 8).density_fit()
+        mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
+        mc.mc2step() 
+        dsrg = DSRG_MRPT2(mc, relax='none', density_fit=True, batch=False, verbose=True)
+        e_dsrg_mrpt2 = dsrg.kernel()
+        print(f"casscf: {mc.e_tot}")
+        #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
+        assert np.isclose(mc.e_tot, -149.675391362112094, atol = 1e-6) # This is for DF
+        
+        # Here are tests for DF
+        assert np.isclose(dsrg.e_h2_t2_ccvv, -0.014939333740318, atol = 1e-6) # This is for DF
+        assert np.isclose(dsrg.e_h2_t2_cavv, -0.042801582864407, atol = 1e-6) # This is for DF
+        assert np.isclose(dsrg.e_h2_t2_ccav, -0.003545083460275, atol = 1e-6) # This is for DF
+        
+        print(f"DSRG-MRPT2 correlation energy: {e_dsrg_mrpt2}")
+        #assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6) This is for direct computation
+        assert np.isclose(e_dsrg_mrpt2, -0.257376059270690, atol=1e-6) # This is for DF
+        
+        print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
+        assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF

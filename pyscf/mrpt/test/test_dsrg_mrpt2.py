@@ -23,16 +23,19 @@ from pyscf.mrpt import dsrg_mrpt2
 
 def setUpModule():
     global mol, mf, mc
+
+
     mol = gto.M(
+        verbose = 2,
         atom = '''
-        N 0 0 0
-        N 0 1.4 0
-        ''',
-        basis = '6-31g', spin=0, charge=0, verbose=5, output='/dev/null'
+    H 0 0 0
+    F 0 0 1.5
+    ''',
+        basis = 'sto-3g', spin=0, charge=0
     )
     mf = scf.RHF(mol)
     mf.kernel()
-    mc = mcscf.CASCI(mf, 6, 6)
+    mc = mcscf.CASCI(mf, 4, 6)
     mc.fcisolver.conv_tol = 1e-15
     mc.kernel()
 
@@ -45,6 +48,26 @@ class KnownValues(unittest.TestCase):
     def test_energy(self):
         e = dsrg_mrpt2.DSRG_MRPT2(mc).kernel()
         self.assertAlmostEqual(e, -0.127274453305632, delta=1.0e-6)
+
+    def test_n2(self):
+        mol = gto.M(
+            atom = '''
+            N 0 0 0
+            N 0 1.4 0
+            ''',
+            basis = '6-31g', spin=0, charge=0, verbose=5, output='/dev/null'
+        )
+        mf = scf.RHF(mol)
+        mf.kernel()
+        mc = mcscf.CASCI(mf, 6, 6)
+        mc.fcisolver.conv_tol = 1e-15
+        mc.kernel()
+        dsrg = dsrg_mrpt2.DSRG_MRPT2(mc)
+        e_dsrg = dsrg.kernel()
+
+        self.assertAlmostEqual(e_dsrg, )
+
+    
 
 if __name__ == "__main__":
     print("Full Tests for DSRG-MRPT2")
