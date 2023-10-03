@@ -650,16 +650,16 @@ class DSRG_MRPT2(lib.StreamObject):
         C1 += np.einsum('wzuv,uv->wz', temp, self.Eta, optimize='optimal')
 
         C1 += 0.50 * np.einsum('vujz,jwyx,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
-        C1 += 0.50 * np.einsum('auzx,wvay,xyuv->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
-        C1 -= 0.50 * np.einsum('auxz,wvay,xyuv->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
-        C1 -= 0.50 * np.einsum('auxz,vway,xyvu->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
+        C1 += 0.50 * np.einsum('auzx,wvay,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
+        C1 -= 0.50 * np.einsum('auxz,wvay,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
+        C1 -= 0.50 * np.einsum('auxz,vway,xyvu->wz', self.V[:, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
 
         C1 -= 0.50 * np.einsum('bwyx,vubz,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
         C1 -= 0.50 * np.einsum('wuix,ivzy,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.S[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
         C1 += 0.50 * np.einsum('uwix,ivzy,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
         C1 += 0.50 * np.einsum('uwix,ivyz,xyvu->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
 
-        C1 += 0.50 * np.einsum('avxy,uwaz,xyuv->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], self.L2, optimize='optimal')
+        C1 += 0.50 * np.einsum('avxy,uwaz,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
         C1 -= 0.50 * np.einsum('uviy,iwxz,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.S[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
 
     def H2_T_C1a_smallG(self, C1):
@@ -777,9 +777,16 @@ class DSRG_MRPT2(lib.StreamObject):
         else:
             self.e_h2_t2 = self.H2_T2_C0()
 
-        if (self.relax_ref): self.compute_hbar(alpha=0.5)
         self.e_corr = self.e_h1_t1 + self.e_h1_t2 + self.e_h2_t1 + self.e_h2_t2
         self.e_tot = self.mc.e_tot + self.e_corr
+
+        if (self.relax_ref): 
+            self.compute_hbar(alpha=0.5)
+            _ecore = self.relax_e_scalar
+            # hbar2_canon is in physicist's notation, PySCF uses chemist's notation
+            self.relax_eigval, self.ci = fci.direct_spin1.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, ecore=_ecore)
+            self.e_corr += self.relax_eigval
+            self.e_tot += self.relax_eigval
 
     def kernel(self):
         self.semi_canonicalize()
@@ -828,33 +835,26 @@ if __name__ == '__main__':
         rhf.kernel()
         casci = mcscf.CASCI(rhf, 4, 6)
         casci.kernel()
-        print(f"{casci.e_tot=}")
         dsrg = DSRG_MRPT2(casci, relax='once')
         e_dsrg_mrpt2 = dsrg.kernel()
-        print(e_dsrg_mrpt2)
-        print(dsrg.e_tot)
+        print(f"{e_dsrg_mrpt2=}")
+        print(f"{dsrg.e_tot=}")
+        try:
+            assert (np.isclose(dsrg.e_tot, -98.51880426166926, atol=1e-6))
+        except:
+            print(f'Warning: dsrg.e_tot is not close to -98.51880426166926')
         
         print(f"{dsrg.e_scalar1=}")
         try:
-            assert (np.isclose(dsrg.e_scalar1, 2.5191661113766357, atol=1e-6))
+            assert (np.isclose(dsrg.e_scalar1, 2.5191661113766437, atol=1e-6))
         except:
-            print(f'Warning: dsrg.e_scalar1 is not close to 2.5191661113766357')
+            print(f'Warning: dsrg.e_scalar1 is not close to 2.5191661113766437')
         print(f"{dsrg.e_scalar2=}")
 
         try:
             assert (np.isclose(dsrg.e_scalar2, 11.143089786391007, atol=1e-6))
         except:
             print(f'Warning: dsrg.e_scalar2 is not close to 11.143089786391007')
-        print(f"{dsrg.relax_e_scalar=}")
-        print(f"{dsrg.e_core=}")
-        from pyscf import fci
-        #_eri = fci.direct_spin1.absorb_h1e(dsrg.hbar1_canon, dsrg.hbar2_canon, 4, 6, .5)
-        ecore = dsrg.mc.e_tot + dsrg.relax_e_scalar + e_dsrg_mrpt2
-        #ecore = 0
-        print(f"{ecore=}")
-        e, fcivec = fci.direct_spin1.kernel(dsrg.hbar1_canon, dsrg.hbar2_canon.swapaxes(1,2), 4, 6,
-                                            ecore=ecore, verbose=5)
-        print('Total energy', e) 
     elif (test==3):
         mol = gto.M(
             verbose = 2,
@@ -866,10 +866,10 @@ if __name__ == '__main__':
         )
         mf = scf.RHF(mol).density_fit()
         mf.kernel()
-        mc = mcscf.CASSCF(mf, 6, 8).density_fit()
+        mc = mcscf.CASSCF(mf, 6, 8) # density_fit() should propagate to mcscf
         mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
         mc.mc2step() 
-        dsrg = DSRG_MRPT2(mc, relax='none', density_fit=True, batch=False, verbose=True)
+        dsrg = DSRG_MRPT2(mc, relax='none', density_fit=True, batch=False, verbose=True) # [todo]: propagate density_fit to DSRG_MRPT2
         e_dsrg_mrpt2 = dsrg.kernel()
         print(f"casscf: {mc.e_tot}")
         #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
