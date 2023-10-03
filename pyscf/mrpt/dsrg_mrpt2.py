@@ -70,9 +70,9 @@ def get_SF_RDM_SA(ci_vecs, weights, norb, nelec):
         # Unlike fcisolver.make_rdm1, make_dm123 doesn't automatically return the state-averaged RDM.
         _dm1, _dm2, _dm3 = fci.rdm.make_dm123('FCI3pdm_kern_sf', ci_vecs[i], ci_vecs[i], norb, nelec)
         _dm1, _dm2, _dm3 = fci.rdm.reorder_dm123(_dm1, _dm2, _dm3)
-        _G1 = np.einsum("pq -> qp", _dm1)
-        _G2 = np.einsum("pqrs -> prqs", _dm2)
-        _G3 = np.einsum("pqrstu -> prtqsu", _dm3)
+        _G1 = np.einsum("pq->qp", _dm1)
+        _G2 = np.einsum("pqrs->prqs", _dm2)
+        _G3 = np.einsum("pqrstu->prtqsu", _dm3)
         G1 += weights[i] * _G1
         G2 += weights[i] * _G2
         G3 += weights[i] * _G3
@@ -83,8 +83,8 @@ def get_SF_cu2(G1, G2):
     Returns the spin-free active space 2-body cumulant.
     '''
     L2 = G2.copy() 
-    L2 -= np.einsum("pr, qs->pqrs", G1, G1)
-    L2 += 0.5 * np.einsum("ps, qr->pqrs", G1, G1)
+    L2 -= np.einsum("pr,qs->pqrs", G1, G1)
+    L2 += 0.5 * np.einsum("ps,qr->pqrs", G1, G1)
     return L2
     
 def get_SF_cu3(G1, G2, G3): 
@@ -92,11 +92,12 @@ def get_SF_cu3(G1, G2, G3):
     Returns the spin-free active space 3-body cumulant.
     '''
     L3 = G3.copy() 
-    L3 -= (np.einsum("ps,qrtu -> pqrstu", G1, G2) + np.einsum("qt,prsu -> pqrstu", G1, G2) + np.einsum("ru,pqst -> pqrstu", G1, G2))
-    L3 += 0.5 * (np.einsum("pt,qrsu -> pqrstu", G1, G2) + np.einsum("pu,qrts -> pqrstu", G1, G2) + np.einsum("qs,prtu -> pqrstu", G1, G2) + np.einsum("qu,prst -> pqrstu", G1, G2) + np.einsum("rs,pqut -> pqrstu", G1, G2) + np.einsum("rt,pqsu -> pqrstu", G1, G2))
-    L3 += 2 * np.einsum("ps, qt, ru -> pqrstu", G1, G1, G1)
-    L3 -= (np.einsum("ps, qu, rt -> pqrstu", G1, G1, G1) + np.einsum("pu, qt, rs -> pqrstu", G1, G1, G1) + np.einsum("pt, qs, ru -> pqrstu", G1, G1, G1))
-    L3 += 0.5 * (np.einsum("pt, qu, rs -> pqrstu", G1, G1, G1) + np.einsum("pu, qs, rt -> pqrstu", G1, G1, G1))
+    L3 -= (np.einsum("ps,qrtu -> pqrstu", G1, G2) + np.einsum("qt,prsu->pqrstu", G1, G2) + np.einsum("ru,pqst->pqrstu", G1, G2))
+    L3 += 0.5 * (np.einsum("pt,qrsu->pqrstu", G1, G2) + np.einsum("pu,qrts->pqrstu", G1, G2) + np.einsum("qs,prtu->pqrstu", G1, G2) + \
+                 np.einsum("qu,prst->pqrstu", G1, G2) + np.einsum("rs,pqut->pqrstu", G1, G2) + np.einsum("rt,pqsu->pqrstu", G1, G2))
+    L3 += 2 * np.einsum("ps,qt,ru->pqrstu", G1, G1, G1)
+    L3 -= (np.einsum("ps,qu,rt->pqrstu", G1, G1, G1) + np.einsum("pu,qt,rs->pqrstu", G1, G1, G1) + np.einsum("pt,qs,ru->pqrstu", G1, G1, G1))
+    L3 += 0.5 * (np.einsum("pt,qu,rs->pqrstu", G1, G1, G1) + np.einsum("pu,qs,rt->pqrstu", G1, G1, G1))
     return L3
 
 class DSRG_MRPT2(lib.StreamObject):
@@ -207,8 +208,12 @@ class DSRG_MRPT2(lib.StreamObject):
         # This should be fine since all indices are active.
         _G1_canon, _G2_canon, _G3_canon = get_SF_RDM_SA(self.ci_vecs, self.state_average_weights, self.nact, self.nelecas)
         _G1_semi_canon = np.einsum("pi,pq,qj->ij", self.semicanonicalizer[self.active,self.active], _G1_canon, self.semicanonicalizer[self.active,self.active], optimize='optimal')
-        _G2_semi_canon = np.einsum("pi,qj,rk,sl,pqrs->ijkl", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G2_canon, optimize='optimal')
-        _G3_semi_canon = np.einsum("pi,qj,rk,sl,tm,un,pqrstu->ijklmn", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G3_canon, optimize='optimal')
+        _G2_semi_canon = np.einsum("pi,qj,rk,sl,pqrs->ijkl", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                   self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G2_canon, optimize='optimal')
+        _G3_semi_canon = np.einsum("pi,qj,rk,sl,tm,un,pqrstu->ijklmn", \
+                                   self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                   self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                   _G3_canon, optimize='optimal')
         self.Eta = 2. * np.identity(self.nact) - _G1_semi_canon
         self.L1 = _G1_semi_canon.copy()
         self.L2 = get_SF_cu2(_G1_semi_canon, _G2_semi_canon)
@@ -407,7 +412,7 @@ class DSRG_MRPT2(lib.StreamObject):
         # [H2, T2] L1 from aavv
         E += 0.25 * np.einsum("efxu,yvef,uv,xy->", self.V[self.pv, self.pv, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pv], self.L1, self.L1, optimize='optimal')
         # [H2, T2] L1 from ccaa
-        E += 0.25 * np.einsum("vymn,mnux,uv,xy -> ", self.V[self.pa, self.pa, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pa], self.Eta, self.Eta, optimize='optimal')
+        E += 0.25 * np.einsum("vymn,mnux,uv,xy->", self.V[self.pa, self.pa, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pa], self.Eta, self.Eta, optimize='optimal')
         # [H2, T2] L1 from caav
         temp = 0.5 * np.einsum("vemx,myue->uxyv", self.V[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], optimize='optimal')
         temp += 0.5 * np.einsum("vexm,ymue->uxyv", self.V[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
@@ -530,7 +535,7 @@ class DSRG_MRPT2(lib.StreamObject):
         B_Lfn = self.Bpq[:, self.pv, self.hc].copy()
         for m in range(self.ncore):
             B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()
-            J_m = np.einsum("Le, Lfn->efn", B_Le, B_Lfn, optimize='optimal')
+            J_m = np.einsum("Le,Lfn->efn", B_Le, B_Lfn, optimize='optimal')
             JK_m = 2.0 * J_m - np.einsum("efn->fen", J_m.copy())
             
             for n in range(self.ncore):
@@ -548,7 +553,7 @@ class DSRG_MRPT2(lib.StreamObject):
         B_Lfv = self.Bpq[:, self.pv, self.ha].copy()
         for m in range(self.ncore):
             B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()      
-            J_m = np.einsum("Le, Lfv->efv", B_Le, B_Lfv, optimize='optimal')
+            J_m = np.einsum("Le,Lfv->efv", B_Le, B_Lfv, optimize='optimal')
             JK_m = 2.0 * J_m - np.einsum("efv->fev", J_m.copy())
             
             for u in range(self.nact):
@@ -573,8 +578,8 @@ class DSRG_MRPT2(lib.StreamObject):
                 B_Le_2 = np.squeeze(self.Bpq[:, self.pv, n]).copy()
                 B_Lu_2 = np.squeeze(self.Bpq[:, self.pa, m]).copy()
                 
-                J_mn = np.einsum("Le, Lu->eu", B_Le, B_Lu, optimize='optimal')
-                J_mn_2 = np.einsum("Le, Lu->eu", B_Le_2, B_Lu_2, optimize='optimal')
+                J_mn = np.einsum("Le,Lu->eu", B_Le, B_Lu, optimize='optimal')
+                J_mn_2 = np.einsum("Le,Lu->eu", B_Le_2, B_Lu_2, optimize='optimal')
                 JK_mn = 2.0 * J_mn - J_mn_2
                 
                 for u in range(self.nact):
@@ -778,11 +783,11 @@ class DSRG_MRPT2(lib.StreamObject):
         if (self.relax_ref): 
             self.compute_hbar(alpha=0.5)
             # hbar2_canon is in physicist's notation, PySCF uses chemist's notation
-            self.relax_eigval, self.ci = fci.direct_spin1.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
+            self.relax_eigval, self.ci_vecs = fci.direct_spin1.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
                                                                  ecore=self.relax_e_scalar, nroots=self.state_average_nstates)
             if (self.state_average_nstates == 1):
                 self.relax_eigval = [self.relax_eigval]
-                self.ci = [self.ci]
+                self.ci_vecs = [self.ci_vecs]
             _eci_avg = np.dot(self.relax_eigval[:self.state_average_nstates], self.state_average_weights)
             self.e_corr += _eci_avg
             self.e_tot += _eci_avg
