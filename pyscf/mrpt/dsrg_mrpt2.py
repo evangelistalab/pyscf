@@ -104,10 +104,6 @@ class DSRG_MRPT2(lib.StreamObject):
     DSRG-MRPT2
 
     Attributes:
-        root : int or list of ints (default: 0)
-            To control which state to compute if multiple roots or state-average
-            wfn were calculated in CASCI/CASSCF. If list of ints, then state-averaged
-            DSRG-MRPT2 is performed of the given list of states.
         s : float (default: 0.5)
             The flow parameter, which controls the extent to which 
             the Hamiltonian is block-diagonalized.
@@ -131,10 +127,9 @@ class DSRG_MRPT2(lib.StreamObject):
     >>> DSRG_MRPT2(mc, s=0.5).kernel()
     -0.15708345625685638
     '''
-    def __init__(self, mc, root=0, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, density_fit=False, batch=False, verbose=False):
+    def __init__(self, mc, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, density_fit=False, batch=False, verbose=False):
         if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
         self.mc = mc
-        self.root = root
         self.flow_param = s
         self.relax = relax
         if (relax not in ['none','once','twice','iterate']):
@@ -782,11 +777,15 @@ class DSRG_MRPT2(lib.StreamObject):
 
         if (self.relax_ref): 
             self.compute_hbar(alpha=0.5)
-            _ecore = self.relax_e_scalar
             # hbar2_canon is in physicist's notation, PySCF uses chemist's notation
-            self.relax_eigval, self.ci = fci.direct_spin1.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, ecore=_ecore)
-            self.e_corr += self.relax_eigval
-            self.e_tot += self.relax_eigval
+            self.relax_eigval, self.ci = fci.direct_spin1.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
+                                                                 ecore=self.relax_e_scalar, nroots=self.state_average_nstates)
+            if (self.state_average_nstates == 1):
+                self.relax_eigval = [self.relax_eigval]
+                self.ci = [self.ci]
+            _eci_avg = np.dot(self.relax_eigval[:self.state_average_nstates], self.state_average_weights)
+            self.e_corr += _eci_avg
+            self.e_tot += _eci_avg
 
     def kernel(self):
         self.semi_canonicalize()
