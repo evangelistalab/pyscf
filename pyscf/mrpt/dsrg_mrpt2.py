@@ -196,33 +196,35 @@ class DSRG_MRPT2(lib.StreamObject):
         _, self.e_core = mc.get_h1eff()
     
     def semi_canonicalize(self):
-        '''
-        Within this function, we generate semicanonicalizer, RDMs, cumulant, F, and V.
-        '''
         # get_fock() uses the state-averaged RDM by default, via mc.fcisolver.make_rdm1()
-        _fock_canon = np.einsum("pi,pq,qj->ij", self.mc.mo_coeff, self.mc.get_fock(), self.mc.mo_coeff, optimize='optimal') 
+        _G1_canon, _G2_canon, _G3_canon = get_SF_RDM_SA(self.ci_vecs, self.state_average_weights, self.nact, self.nelecas)
+        _fock_canon = np.einsum("pi,pq,qj->ij", self.mc.mo_coeff, self.mc.get_fock(casdm1=_G1_canon), self.mc.mo_coeff, optimize='optimal') 
         self.semicanonicalizer = np.zeros((self.nao, self.nao), dtype='float64')
         _, self.semicanonicalizer[self.core,self.core] = np.linalg.eigh(_fock_canon[self.core,self.core])
         _, self.semicanonicalizer[self.active,self.active] = np.linalg.eigh(_fock_canon[self.active,self.active])
         _, self.semicanonicalizer[self.virt,self.virt] = np.linalg.eigh(_fock_canon[self.virt,self.virt])
-        
+        self.fock = np.einsum("pi,pq,qj->ij", self.semicanonicalizer, _fock_canon, self.semicanonicalizer, optimize='optimal')
+
         # RDMs in semi-canonical basis.
         # This should be fine since all indices are active.
-        _G1_canon, _G2_canon, _G3_canon = get_SF_RDM_SA(self.ci_vecs, self.state_average_weights, self.nact, self.nelecas)
-        _G1_semi_canon = np.einsum("pi,pq,qj->ij", self.semicanonicalizer[self.active,self.active], _G1_canon, self.semicanonicalizer[self.active,self.active], optimize='optimal')
-        _G2_semi_canon = np.einsum("pi,qj,rk,sl,pqrs->ijkl", self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
-                                   self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], _G2_canon, optimize='optimal')
+        
+        _G1_semi_canon = np.einsum("pi,qj,pq->ij", \
+                                    self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                    _G1_canon, optimize='optimal')
+        _G2_semi_canon = np.einsum("pi,qj,rk,sl,pqrs->ijkl", \
+                                    self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                    self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                    _G2_canon, optimize='optimal')
         _G3_semi_canon = np.einsum("pi,qj,rk,sl,tm,un,pqrstu->ijklmn", \
-                                   self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
-                                   self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
-                                   _G3_canon, optimize='optimal')
+                                    self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                    self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                    self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
+                                    _G3_canon, optimize='optimal')
         self.Eta = 2. * np.identity(self.nact) - _G1_semi_canon
         self.L1 = _G1_semi_canon.copy()
         self.L2 = get_SF_cu2(_G1_semi_canon, _G2_semi_canon)
         self.L3 = get_SF_cu3(_G1_semi_canon, _G2_semi_canon, _G3_semi_canon)
         del _G1_canon, _G2_canon, _G3_canon, _G1_semi_canon, _G2_semi_canon, _G3_semi_canon
-        
-        self.fock = np.einsum("pi,pq,qj->ij", self.semicanonicalizer, _fock_canon, self.semicanonicalizer, optimize='optimal')
         
         if (self.df):
             # I don't think batching will help here since a N^3 tensor (Bpq_ao) has to be construct explicitly.
@@ -240,12 +242,12 @@ class DSRG_MRPT2(lib.StreamObject):
             self.V["aaaa"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.ha], self.Bpq[:, self.pa, self.ha], optimize='optimal')
             del Bpq_ao
         else:
-            rhf_eri_ao = self.mc.mol.intor('int2e_sph', aosym='s1') # Chemist's notation
-            rhf_eri_mo = ao2mo.incore.full(rhf_eri_ao, self.mc.mo_coeff, False) # (pq|rs)
-            _tmp = rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
+            _rhf_eri_ao = self.mc.mol.intor('int2e_sph', aosym='s1') # Chemist's notation
+            _rhf_eri_mo = ao2mo.incore.full(_rhf_eri_ao, self.mc.mo_coeff, False) # (pq|rs)
+            _tmp = _rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
             _tmp = np.einsum("aibj->abij", _tmp, dtype='float64')
             self.V = np.einsum("pi,qj,pqrs,rk,sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
-            del rhf_eri_ao, rhf_eri_mo, _tmp
+            del _rhf_eri_ao, _rhf_eri_mo, _tmp
             
     def compute_T2_df_minimal(self):
         self.e_orb = {"c":np.diagonal(self.fock)[self.core], "a": np.diagonal(self.fock)[self.active], "v": np.diagonal(self.fock)[self.virt]}
@@ -845,7 +847,7 @@ class DSRG_MRPT2(lib.StreamObject):
         C2 += temp
         C2 += np.einsum('uvxy->vuyx', temp, optimize='optimal')
 
-    def compute_hbar(self, alpha):
+    def compute_hbar(self):
         hbar1_temp = np.zeros((self.nact,)*2)
         hbar2_temp = np.zeros((self.nact,)*4)
         
@@ -860,27 +862,24 @@ class DSRG_MRPT2(lib.StreamObject):
             self.H2_T_C1a_smallG(hbar1_temp)
             self.H_T_C2a_smallS(hbar2_temp)
 
-        self.hbar1 += alpha * hbar1_temp 
-        self.hbar1 += alpha * hbar1_temp.T
+        self.hbar1 += 0.5 * hbar1_temp 
+        self.hbar1 += 0.5 * hbar1_temp.T
         #print(self.hbar1) This is correct.
         
-        self.hbar2 += alpha * hbar2_temp
-        self.hbar2 += alpha * np.einsum('uvxy->xyuv', hbar2_temp, optimize='optimal')
-        print(self.hbar2[1, 3, :, :])
+        self.hbar2 += 0.5 * hbar2_temp
+        self.hbar2 += 0.5 * np.einsum('uvxy->xyuv', hbar2_temp, optimize='optimal')
         
         if (self.df):
-            self.hbar1 += alpha * self.C1_VT2_CAVV
-            self.hbar1 += alpha * self.C1_VT2_CAVV.T
-            self.hbar1 -= alpha * self.C1_VT2_CCAV
-            self.hbar1 -= alpha * self.C1_VT2_CCAV.T
+            self.hbar1 += 0.5 * self.C1_VT2_CAVV
+            self.hbar1 += 0.5 * self.C1_VT2_CAVV.T
+            self.hbar1 -= 0.5 * self.C1_VT2_CCAV
+            self.hbar1 -= 0.5 * self.C1_VT2_CCAV.T
         else:
             hbar1_temp = np.einsum('efzm,wmef->wz', self.V[self.pv, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pv, self.pv], optimize='optimal')
             hbar1_temp -= np.einsum('wemn,mnze->wz', self.V[self.pa, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pv], optimize='optimal')
-            self.hbar1 += alpha * hbar1_temp
-            self.hbar1 += alpha * hbar1_temp.T
+            self.hbar1 += 0.5 * hbar1_temp
+            self.hbar1 += 0.5 * hbar1_temp.T
         del hbar1_temp, hbar2_temp
-
-        self.deGNO_ints()
 
     def deGNO_ints(self):
         hbar2_temp = 2*self.hbar2 - np.einsum('pqrs->pqsr', self.hbar2, optimize='optimal')
@@ -900,6 +899,8 @@ class DSRG_MRPT2(lib.StreamObject):
 
 
     def drsg_mrpt2_iteration(self):
+        self.semi_canonicalize()
+
         if (self.relax_ref):
             self.hbar1 = self.fock[self.active, self.active].copy()
             if (self.df):
@@ -932,7 +933,8 @@ class DSRG_MRPT2(lib.StreamObject):
         self.e_tot = self.mc.e_tot + self.e_corr
 
         if (self.relax_ref): 
-            self.compute_hbar(alpha=0.5)
+            self.compute_hbar()
+            self.deGNO_ints()
             # hbar2_canon is in physicist's notation, PySCF uses chemist's notation
             self.relax_eigval, self.ci_vecs = fci.direct_spin1.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
                                                                  ecore=self.relax_e_scalar, nroots=self.state_average_nstates)
@@ -944,8 +946,20 @@ class DSRG_MRPT2(lib.StreamObject):
             self.e_tot += _eci_avg
 
     def kernel(self):
-        self.semi_canonicalize()
         self.drsg_mrpt2_iteration()
+
+        if (self.relax_ref):
+            self.relax_energies = np.zeros((self.nrelax,3)) # [iter, [unrelaxed, relaxed, Eref]]
+        else:
+            self.relax_energies = np.zeros((1,3))
+
+        self.relax_energies[0, 0] = self.e_tot
+        self.relax_energies[0, 2] = self.mc.e_tot
+
+        if (self.nrelax == 1): self.converged = True
+
+        for irelax in range(self.nrelax):
+            pass      
 
         return self.e_corr
 
