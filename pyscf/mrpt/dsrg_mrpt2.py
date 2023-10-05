@@ -46,7 +46,7 @@ def taylor_exp(z):
     else:
         return 0.0
     
-def regularized_denominator(x, s):
+def regularized_denominator(x, s): # This function will need to be changed if we want to get rid of for loops in regularization steps.
     '''
     Returns (1-exp(-s*x^2))/x
     '''
@@ -242,18 +242,30 @@ class DSRG_MRPT2(lib.StreamObject):
             self.V["aaaa"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.ha], self.Bpq[:, self.pa, self.ha], optimize='optimal')
             del Bpq_ao
         else:
+            self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa", "vvcc", "vvac", "vacc"])
             _rhf_eri_ao = self.mc.mol.intor('int2e_sph', aosym='s1') # Chemist's notation
             _rhf_eri_mo = ao2mo.incore.full(_rhf_eri_ao, self.mc.mo_coeff, False) # (pq|rs)
             _tmp = _rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
             _tmp = np.einsum("aibj->abij", _tmp, dtype='float64')
-            self.V = np.einsum("pi,qj,pqrs,rk,sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
+            _tmp = np.einsum("pi,qj,pqrs,rk,sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
+            self.V["vvaa"] = _tmp[self.pv, self.pv, self.ha, self.ha].copy()
+            self.V["aacc"] = _tmp[self.pa, self.pa, self.hc, self.hc].copy()
+            self.V["avca"] = _tmp[self.pa, self.pv, self.hc, self.ha].copy()
+            self.V["avac"] = _tmp[self.pa, self.pv, self.ha, self.hc].copy()
+            self.V["vaaa"] = _tmp[self.pv, self.pa, self.ha, self.ha].copy()
+            self.V["aaca"] = _tmp[self.pa, self.pa, self.hc, self.ha].copy()
+            self.V["aaaa"] = _tmp[self.pa, self.pa, self.ha, self.ha].copy()
+            self.V["vvcc"] = _tmp[self.pv, self.pv, self.hc, self.hc].copy()
+            self.V["vvac"] = _tmp[self.pv, self.pv, self.ha, self.hc].copy()
+            self.V["vacc"] = _tmp[self.pv, self.pa, self.hc, self.hc].copy()
             del _rhf_eri_ao, _rhf_eri_mo, _tmp
             
-    def compute_T2_df_minimal(self):
+    def compute_T2(self):
         self.e_orb = {"c":np.diagonal(self.fock)[self.core], "a": np.diagonal(self.fock)[self.active], "v": np.diagonal(self.fock)[self.virt]}
         self.T2 = {}
         self.S = {}
-        #ONLY these T2 blocks are stored: aavv, ccaa, caav, acav, aava, caaa. Internal exciation (aaaa) tensor is zero.
+        # Density fitting: these T2 blocks are stored: aavv, ccaa, caav, acav, aava, caaa. Internal exciation (aaaa) tensor is zero.
+        # Direct: three more blocks are stored: ccvv, acvv, ccva
         for Vblock, tensor in self.V.items():
             if Vblock != "aaaa":
                 block = Vblock[2] + Vblock[3] + Vblock[0] + Vblock[1]   
@@ -273,87 +285,49 @@ class DSRG_MRPT2(lib.StreamObject):
         self.S["acav"] = 2.0 * self.T2["acav"] - np.einsum("muve->umve", self.T2["caav"])
         self.S["aava"] = 2.0 * self.T2["aava"] - np.einsum("vuex->uvex", self.T2["aava"])
         self.S["caaa"] = 2.0 * self.T2["caaa"] - np.einsum("muvx->muxv", self.T2["caaa"])
-
-    def compute_T2_full(self):
-        self.e_orb = np.diagonal(self.fock)
-        self.T2 = np.einsum("abij->ijab", self.V.copy())
-        for i in range(self.nhole):
-            for j in range(self.nhole):
-                for k in range(self.npart):
-                    for l in range(self.npart):
-                        denom = np.float64(self.e_orb[i] + self.e_orb[j] - self.e_orb[self.ncore+k] - self.e_orb[self.ncore+l])
-                        self.T2[i, j, k, l] *= np.float64(regularized_denominator(denom, self.flow_param))    
-        self.T2[self.ha,self.ha,self.pa,self.pa] = 0
-        # 2 * J - K
-        self.S = 2.0 * self.T2.copy() - np.einsum("ijab->ijba", self.T2.copy(), optimize='optimal')
+        # ccvv, acvv, ccva
+        if (not self.df):
+            self.S["ccvv"] = 2.0 * self.T2["ccvv"] - np.einsum("mnef->mnfe", self.T2["ccvv"])
+            self.S["acvv"] = 2.0 * self.T2["acvv"] - np.einsum("umef->umfe", self.T2["acvv"])
+            self.S["ccva"] = 2.0 * self.T2["ccva"] - np.einsum("mnue->nmue", self.T2["ccva"])
     
-    def renormalize_V_df(self):
-        for block, tensor in self.V.items():   # abij
-            # Shuhang Li: This is inefficient.
-            for a in range(tensor.shape[0]):
-                for b in range(tensor.shape[1]):
-                    for i in range(tensor.shape[2]):
-                        for j in range(tensor.shape[3]):
-                            denom = np.float64(self.e_orb[block[0]][a] + self.e_orb[block[1]][b] - self.e_orb[block[2]][i] - self.e_orb[block[3]][j])
-                            self.V[block][a,b,i,j] *= np.float64(1. + np.exp(-self.flow_param * (denom)**2))
-                            
-    def renormalize_V_full(self):
-        for k in range(self.npart):
-            for l in range(self.npart):
-                for i in range(self.nhole):
-                    for j in range(self.nhole):
-                        denom = np.float64(self.e_orb[i] + self.e_orb[j] - self.e_orb[self.ncore+k] - self.e_orb[self.ncore+l])
-                        self.V[k, l, i, j] *= np.float64(1. + np.exp(-self.flow_param * (denom)**2))
-    
-    def compute_T2(self):
-        if (self.df):
-            self.compute_T2_df_minimal()  
-        else:
-            self.compute_T2_full()             
+    def renormalize_V(self):
+        for block, tensor in self.V.items():
+            a_vals = self.e_orb[block[0]]
+            b_vals = self.e_orb[block[1]]
+            i_vals = self.e_orb[block[2]]
+            j_vals = self.e_orb[block[3]]
+            denom = np.float64(a_vals[:, np.newaxis, np.newaxis, np.newaxis] + b_vals[np.newaxis, :, np.newaxis, np.newaxis] - i_vals[np.newaxis, np.newaxis, :, np.newaxis] - j_vals[np.newaxis, np.newaxis, np.newaxis, :])
+            tensor *= np.float64(1. + np.exp(-self.flow_param * denom**2))         
     
     def compute_T1(self):
         # initialize T1 with F + [H0, A]
-        self.T1 = self.fock[self.hole,self.part].copy()
-        if (self.df):      
-            self.T1[self.hc, self.pa] += 0.5 * np.einsum("ivaw, wu, uv->ia", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            self.T1[self.hc, self.pv] += 0.5 * np.einsum("vmwe, wu, uv->me", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            self.T1[self.ha, self.pv] += 0.5 * np.einsum("ivaw, wu, uv->ia", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-        
-            self.T1[self.hc, self.pa] -= 0.5 * np.einsum("iwau,vw,uv->ia", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            self.T1[self.hc, self.pv] -= 0.5 * np.einsum("wmue,vw,uv->me", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            self.T1[self.ha, self.pv] -= 0.5 * np.einsum("iwau,vw,uv->ia", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-        else:
-            self.T1 += 0.5 * np.einsum('ivaw,wu,uv->ia', self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            self.T1 -= 0.5 * np.einsum('iwau,vw,uv->ia', self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, optimize='optimal')
-        
+        self.T1 = self.fock[self.hole,self.part].copy()    
+        self.T1[self.hc, self.pa] += 0.5 * np.einsum("ivaw, wu, uv->ia", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        self.T1[self.hc, self.pv] += 0.5 * np.einsum("vmwe, wu, uv->me", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        self.T1[self.ha, self.pv] += 0.5 * np.einsum("ivaw, wu, uv->ia", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+    
+        self.T1[self.hc, self.pa] -= 0.5 * np.einsum("iwau,vw,uv->ia", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        self.T1[self.hc, self.pv] -= 0.5 * np.einsum("wmue,vw,uv->me", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        self.T1[self.ha, self.pv] -= 0.5 * np.einsum("iwau,vw,uv->ia", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')   
         # Shuhang Li: This is inefficient.
         for i in range(self.nhole):
             for k in range(self.npart):
                 denom_t1 = np.float64(np.diagonal(self.fock)[i] - np.diagonal(self.fock)[self.ncore+k])
                 self.T1[i, k] *= np.float64(regularized_denominator(denom_t1, self.flow_param))
         self.T1[self.ha,self.pa] = 0
- 
-    def renormalize_V(self):
-        if (self.df):
-            self.renormalize_V_df()
-        else:
-            self.renormalize_V_full()
     
     def renormalize_F(self):
         _tmp = np.zeros((self.npart, self.nhole), dtype='float64')
         _tmp = self.fock[self.part,self.hole].copy()
-        if (self.df):
-            _tmp[self.pa, self.hc] += 0.5 * np.einsum("ivaw,wu,uv->ai", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            _tmp[self.pa, self.hc] -= 0.5 * np.einsum("iwau,vw,uv->ai", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            
-            _tmp[self.pv, self.hc] += 0.5 * np.einsum("vmwe,wu,uv->em", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            _tmp[self.pv, self.hc] -= 0.5 * np.einsum("wmue,vw,uv->em", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            
-            _tmp[self.pv, self.ha] += 0.5 * np.einsum("ivaw,wu,uv->ai", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            _tmp[self.pv, self.ha] -= 0.5 * np.einsum("iwau,vw,uv->ai", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
-        else:
-            _tmp += 0.5 * np.einsum("ivaw,wu,uv->ai", self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, optimize='optimal')
-            _tmp -= 0.5 * np.einsum("iwau,vw,uv->ai", self.S[:, self.ha, :, self.pa], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        _tmp[self.pa, self.hc] += 0.5 * np.einsum("ivaw,wu,uv->ai", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        _tmp[self.pa, self.hc] -= 0.5 * np.einsum("iwau,vw,uv->ai", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        
+        _tmp[self.pv, self.hc] += 0.5 * np.einsum("vmwe,wu,uv->em", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        _tmp[self.pv, self.hc] -= 0.5 * np.einsum("wmue,vw,uv->em", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        
+        _tmp[self.pv, self.ha] += 0.5 * np.einsum("ivaw,wu,uv->ai", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
+        _tmp[self.pv, self.ha] -= 0.5 * np.einsum("iwau,vw,uv->ai", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
         
         for i in range(self.nhole):
             for k in range(self.npart):
@@ -377,87 +351,32 @@ class DSRG_MRPT2(lib.StreamObject):
     
     def H1_T2_C0(self):
         E = 0.0
-        if (self.df):
-            temp = np.einsum("ex,uvey->uvxy", self.F_tilde[self.pv, self.ha], self.T2["aava"], optimize='optimal')
-            temp -= np.einsum("vm,muyx->uvxy", self.F_tilde[self.pa, self.hc], self.T2["caaa"], optimize='optimal')
-            E = np.einsum("xyuv,uvxy->", self.L2, temp, optimize='optimal')
-        else:
-            temp = np.einsum("ex,uvey->uvxy", self.F_tilde[self.pv, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], optimize='optimal')
-            temp -= np.einsum("vm,umxy->uvxy", self.F_tilde[self.pa, self.hc], self.T2[self.ha, self.hc, self.pa, self.pa], optimize='optimal')
-            E = np.einsum("xyuv,uvxy->", self.L2, temp, optimize='optimal')
+        temp = np.einsum("ex,uvey->uvxy", self.F_tilde[self.pv, self.ha], self.T2["aava"], optimize='optimal')
+        temp -= np.einsum("vm,muyx->uvxy", self.F_tilde[self.pa, self.hc], self.T2["caaa"], optimize='optimal')
+        E = np.einsum("xyuv,uvxy->", self.L2, temp, optimize='optimal')
         if (self.verbose):
             print(f"FT2, {E}")
         return E
     
     def H2_T1_C0(self):
         E = 0.0
-        if (self.df):
-            temp = np.einsum("evxy,ue->uvxy", self.V["vaaa"], self.T1[self.ha, self.pv], optimize='optimal')
-            temp -= np.einsum("uvmy,mx->uvxy", self.V["aaca"], self.T1[self.hc, self.pa], optimize='optimal')
-        else:
-            temp = np.einsum("evxy,ue->uvxy", self.V[self.pv, self.pa, self.ha, self.ha], self.T1[self.ha, self.pv], optimize='optimal')
-            temp -= np.einsum("uvmy,mx->uvxy", self.V[self.pa, self.pa, self.hc, self.ha], self.T1[self.hc, self.pa], optimize='optimal')
+        temp = np.einsum("evxy,ue->uvxy", self.V["vaaa"], self.T1[self.ha, self.pv], optimize='optimal')
+        temp -= np.einsum("uvmy,mx->uvxy", self.V["aaca"], self.T1[self.hc, self.pa], optimize='optimal')
         E = np.einsum("xyuv,uvxy->", self.L2, temp)
         if (self.verbose):
             print(f"VT1, {E}")
         return E
     
     def H2_T2_C0(self):
-        E = np.einsum("efmn,mnef->", self.V[self.pv, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pv, self.pv], optimize='optimal')
-        E += np.einsum("efmu,mvef,uv->", self.V[self.pv, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pv, self.pv], self.L1, optimize='optimal')
-        E += np.einsum("vemn,mnue,uv->", self.V[self.pa, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pv], self.Eta, optimize='optimal')
+        E = np.einsum("efmn,mnef->", self.V["vvcc"], self.S["ccvv"], optimize='optimal')
+        E += np.einsum("feum,vmfe,uv->", self.V["vvac"], self.S["acvv"], self.L1, optimize='optimal')
+        E += np.einsum("evnm,nmeu,uv->", self.V["vacc"], self.S["ccva"], self.Eta, optimize='optimal')
         E += self.H2_T2_C0_T2small()
         if (self.verbose):
             print(f"VT2, {E}")
         return E
     
     def H2_T2_C0_T2small(self):
-        E = 0.0
-        # [H2, T2] L1 from aavv
-        E += 0.25 * np.einsum("efxu,yvef,uv,xy->", self.V[self.pv, self.pv, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pv], self.L1, self.L1, optimize='optimal')
-        # [H2, T2] L1 from ccaa
-        E += 0.25 * np.einsum("vymn,mnux,uv,xy->", self.V[self.pa, self.pa, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pa], self.Eta, self.Eta, optimize='optimal')
-        # [H2, T2] L1 from caav
-        temp = 0.5 * np.einsum("vemx,myue->uxyv", self.V[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], optimize='optimal')
-        temp += 0.5 * np.einsum("vexm,ymue->uxyv", self.V[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
-        E += np.einsum("uxyv,uv,xy->", temp, self.Eta, self.L1, optimize='optimal')
-        # [H2, T2] L1 from caaa and aaav
-        temp = 0.25 * np.einsum("evwx,zyeu,wz->uxyv", self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], self.L1, optimize='optimal')
-        temp += 0.25 * np.einsum("vzmx,myuw,wz->uxyv", self.V[self.pa, self.pa, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pa], self.Eta, optimize='optimal')
-        E += np.einsum("uxyv,uv,xy->", temp, self.Eta, self.L1, optimize='optimal')
-        
-        # <[Hbar2, T2]> C_4 (C_2)^2
-        # HH
-        temp = 0.5 * np.einsum("uvmn,mnxy->uvxy", self.V[self.pa, self.pa, self.hc, self.hc], self.T2[self.hc, self.hc, self. pa, self.pa], optimize='optimal')
-        temp += 0.5 * np.einsum("uvmw,mzxy,wz->uvxy", self.V[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.L1, optimize='optimal')
-        
-        # PP
-        temp += 0.5 * np.einsum("efxy,uvef->uvxy", self.V[self.pv, self.pv, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pv], optimize='optimal')
-        temp += 0.5 * np.einsum("ezxy,uvew,wz->uvxy", self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.Eta, optimize='optimal')
-        
-        # HP
-        temp += np.einsum("uexm,vmye->uvxy", self.V[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
-        temp -= np.einsum("uemx,vmye->uvxy", self.V[self.pa, self.pv, self.hc, self.ha], self.T2[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
-        temp -= np.einsum("vemx,muye->uvxy", self.V[self.pa, self.pv, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pv], optimize='optimal')
-        
-        # HP with Gamma1
-        temp += 0.5 * np.einsum("euwx,zvey,wz->uvxy", self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], self.L1, optimize='optimal')
-        temp -= 0.5 * np.einsum("euxw,zvey,wz->uvxy", self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L1, optimize='optimal')
-        temp -= 0.5 * np.einsum("evxw,uzey,wz->uvxy", self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L1, optimize='optimal')
-        
-        # HP with Eta1
-        temp += 0.5 * np.einsum("wumx,mvzy,wz->uvxy", self.V[self.pa, self.pa, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pa], self.Eta, optimize='optimal')
-        temp -= 0.5 * np.einsum("uwmx,mvzy,wz->uvxy", self.V[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.Eta, optimize='optimal')
-        temp -= 0.5 * np.einsum("vwmx,muyz,wz->uvxy", self.V[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.Eta, optimize='optimal')
-        
-        E += np.einsum("uvxy,uvxy->", temp, self.L2)
-        
-        #
-        E += np.einsum("ewxy,uvez,xyzuwv->", self.V[self.pv, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, self.pv, self.pa], self.L3, optimize='optimal')
-        E -= np.einsum("uvmz,mwxy,xyzuwv->", self.V[self.pa, self.pa, self.hc, self.ha], self.T2[self.hc, self.ha, self.pa, self.pa], self.L3, optimize='optimal')
-        return E
-
-    def H2_T2_C0_T2small_df(self):
     #  Note the following blocks should be available in memory.
     #  V : vvaa, aacc, avca, avac, vaaa, aaca
     #  T2: aavv, ccaa, caav, acav, aava, caaa
@@ -611,85 +530,16 @@ class DSRG_MRPT2(lib.StreamObject):
         if (self.verbose):
             print(f"VT2_CCAV (DF), {E}") 
         return E
-    
-    def H1_T_C1a_smallS(self, C1):
-        C1 += 1.00 * np.einsum('ev,ue->uv', self.F_tilde[self.pv, self.ha], self.T1[self.ha,self.pv], optimize='optimal')
-        C1 -= 1.00 * np.einsum('um,mv->uv', self.F_tilde[self.pa, self.hc], self.T1[self.hc,self.pa], optimize='optimal')
-        C1 += 1.00 * np.einsum('em,umve->uv', self.F_tilde[self.pv, self.hc], self.S[self.ha,self.hc,self.pa,self.pv], optimize='optimal')
-        C1 += 1.00 * np.einsum('xm,muxv->uv', self.F_tilde[self.pa, self.hc], self.S[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
-        C1 += 0.50 * np.einsum('ex,yuev,xy->uv', self.F_tilde[self.pv, self.ha], self.S[self.ha,self.ha,self.pv,self.pa], self.L1, optimize='optimal')
-        #C1 += 0.50 * np.einsum('wx,uyvw,xy->uv', self.F_tilde[self.pa, self.ha], self.S[self.ha,self.ha,self.pa,self.pa], self.L1, optimize='optimal')
-        #C1["uv"] += 0.5 * H1["wx"] * S2["uyvw"] * L1_["xy"]; (sadsrg_comm.cc::877)
-        C1 -= 0.50 * np.einsum('ym,muxv,xy->uv', self.F_tilde[self.pa, self.hc], self.S[self.hc,self.ha,self.pa,self.pa], self.L1, optimize='optimal')
-        #C1 -= 0.50 * np.einsum('yw,uwvx,xy->uv', self.F_tilde[self.pa, self.ha], self.S[self.ha,self.ha,self.pa,self.pa], self.L1, optimize='optimal')
-        # C1["uv"] -= 0.5 * H1["yw"] * S2["uwvx"] * L1_["xy"]; (ibid, 881)
         
-    def H1_T_C1a_smallS_df(self, C1):
+    def H1_T_C1a_smallS(self, C1):
         C1 += 1.00 * np.einsum('ev,ue->uv', self.F_tilde[self.pv, self.ha], self.T1[self.ha,self.pv], optimize='optimal')
         C1 -= 1.00 * np.einsum('um,mv->uv', self.F_tilde[self.pa, self.hc], self.T1[self.hc,self.pa], optimize='optimal')
         C1 += 1.00 * np.einsum('em,umve->uv', self.F_tilde[self.pv, self.hc], self.S["acav"], optimize='optimal')
         C1 += 1.00 * np.einsum('xm,muxv->uv', self.F_tilde[self.pa, self.hc], self.S["caaa"], optimize='optimal')
         C1 += 0.50 * np.einsum('ex,yuev,xy->uv', self.F_tilde[self.pv, self.ha], self.S["aava"], self.L1, optimize='optimal')
         C1 -= 0.50 * np.einsum('ym,muxv,xy->uv', self.F_tilde[self.pa, self.hc], self.S["caaa"], self.L1, optimize='optimal')
-
+        
     def H2_T_C1a_smallS(self, C1):
-        C1 += 1.00 * np.einsum('uemz,mwue->wz', self.V[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], optimize='optimal')
-        C1 += 1.00 * np.einsum('uezm,wmue->wz', self.V[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
-        C1 += 1.00 * np.einsum('vumz,mwvu->wz', self.V[self.pa, self.pa, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pa], optimize='optimal')
-        
-        C1 -= 1.00 * np.einsum('wemu,muze->wz', self.V[self.pa, self.pv, self.hc, self.ha], self.S[self.hc, self.ha, self.pa, self.pv], optimize='optimal')
-        C1 -= 1.00 * np.einsum('weum,umze->wz', self.V[self.pa, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pa, self.pv], optimize='optimal')
-        C1 -= 1.00 * np.einsum('ewvu,vuez->wz', self.V[self.pv, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, self.pv, self.pa], optimize='optimal')
-
-        temp =  0.5 * np.einsum('wvef,efzu->wzuv', self.S[self.ha, self.ha, self.pv, self.pv], self.V[self.pv, self.pv, self.ha, self.ha], optimize='optimal')
-        temp += 0.5 * np.einsum('wvex,exzu->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
-        temp += 0.5 * np.einsum('vwex,exuz->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
-        #temp += 0.5 * np.einsum('wvxy,xyzu->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
-
-        temp -= 0.5 * np.einsum('wmue,vezm->wzuv', self.S[self.ha, self.hc, self.pa, self.pv], self.V[self.pa, self.pv, self.ha, self.hc], optimize='optimal')
-        temp -= 0.5 * np.einsum('mwxu,xvmz->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
-
-        temp -= 0.5 * np.einsum('mwue,vemz->wzuv', self.S[self.hc, self.ha, self.pa, self.pv], self.V[self.pa, self.pv, self.hc, self.ha], optimize='optimal')
-        temp -= 0.5 * np.einsum('mwux,vxmz->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
-
-        temp += 0.25 * np.einsum('jwxu,xy,yvjz->wzuv', self.S[:, self.ha, self.pa, self.pa], self.L1, self.V[self.pa, self.pa, :, self.ha], optimize='optimal')
-        temp -= 0.25 * np.einsum('ywbu,xy,bvxz->wzuv', self.S[self.ha, self.ha, :, self.pa], self.L1, self.V[:, self.pa, self.ha, self.ha], optimize='optimal')
-        temp -= 0.25 * np.einsum('wybu,xy,bvzx->wzuv', self.S[self.ha, self.ha, :, self.pa], self.L1, self.V[:, self.pa, self.ha, self.ha], optimize='optimal')
-
-        C1 += np.einsum('wzuv,uv->wz', temp, self.L1, optimize='optimal')
-        temp = np.zeros((self.nact,)*4)
-
-        temp -= 0.5 * np.einsum('mnzu,wvmn->wzuv', self.S[self.hc, self.hc, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.hc], optimize='optimal')
-        temp -= 0.5 * np.einsum('mxzu,wvmx->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
-        temp -= 0.5 * np.einsum('mxuz,vwmx->wzuv', self.S[self.hc, self.ha, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.ha], optimize='optimal')
-        #temp -= 0.5 * np.einsum('xyzu,wvxy->wzuv', self.S[self.hc, self.hc, self.pa, self.pa], self.V[self.pa, self.pa, self.hc, self.hc], optimize='optimal')
-
-        temp += 0.5 * np.einsum('vmze,weum->wzuv', self.S[self.ha, self.hc, self.pa, self.pv], self.V[self.pa, self.pv, self.ha, self.hc], optimize='optimal')
-        temp += 0.5 * np.einsum('xvez,ewxu->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
-
-        temp += 0.5 * np.einsum('mvze,wemu->wzuv', self.S[self.hc, self.ha, self.pa, self.pv], self.V[self.pa, self.pv, self.hc, self.ha], optimize='optimal')
-        temp += 0.5 * np.einsum('vxez,ewux->wzuv', self.S[self.ha, self.ha, self.pv, self.pa], self.V[self.pv, self.pa, self.ha, self.ha], optimize='optimal')
-
-        temp -= 0.25 * np.einsum('yvbz,xy,bwxu->wzuv', self.S[self.ha, self.ha, :, self.pa], self.Eta, self.V[:, self.pa, self.ha, self.ha], optimize='optimal')
-        temp += 0.25 * np.einsum('jvxz,xy,ywju->wzuv', self.S[:, self.ha, self.pa, self.pa], self.Eta, self.V[self.pa, self.pa, :, self.ha], optimize='optimal')
-        temp += 0.25 * np.einsum('jvzx,xy,wyju->wzuv', self.S[:, self.ha, self.pa, self.pa], self.Eta, self.V[self.pa, self.pa, :, self.ha], optimize='optimal')
-
-        C1 += np.einsum('wzuv,uv->wz', temp, self.Eta, optimize='optimal')
-
-        C1 += 0.50 * np.einsum('vujz,jwyx,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
-        C1 += 0.50 * np.einsum('auzx,wvay,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
-        C1 -= 0.50 * np.einsum('auxz,wvay,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
-        C1 -= 0.50 * np.einsum('auxz,vway,xyvu->wz', self.V[:, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
-
-        C1 -= 0.50 * np.einsum('bwyx,vubz,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.T2[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
-        C1 -= 0.50 * np.einsum('wuix,ivzy,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.S[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
-        C1 += 0.50 * np.einsum('uwix,ivzy,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
-        C1 += 0.50 * np.einsum('uwix,ivyz,xyvu->wz', self.V[self.pa, self.pa, :, self.ha], self.T2[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
-
-        C1 += 0.50 * np.einsum('avxy,uwaz,xyuv->wz', self.V[:, self.pa, self.ha, self.ha], self.S[self.ha, self.ha, :, self.pa], self.L2, optimize='optimal')
-        C1 -= 0.50 * np.einsum('uviy,iwxz,xyuv->wz', self.V[self.pa, self.pa, :, self.ha], self.S[:, self.ha, self.pa, self.pa], self.L2, optimize='optimal')
-        
-    def H2_T_C1a_smallS_df(self, C1):
         C1 += 1.00 * np.einsum('uemz,mwue->wz', self.V["avca"], self.S["caav"], optimize='optimal')
         C1 += 1.00 * np.einsum('uezm,wmue->wz', self.V["avac"], self.S["acav"], optimize='optimal')
         C1 += 1.00 * np.einsum('vumz,mwvu->wz', self.V["aaca"], self.S["caaa"], optimize='optimal')
@@ -743,17 +593,8 @@ class DSRG_MRPT2(lib.StreamObject):
 
         C1 += 0.50 * np.einsum('avxy,uwaz,xyuv->wz', self.V["vaaa"], self.S["aava"], self.L2, optimize='optimal')
         C1 -= 0.50 * np.einsum('uviy,iwxz,xyuv->wz', self.V["aaca"], self.S["caaa"], self.L2, optimize='optimal')
-
-    def H2_T_C1a_smallG(self, C1):
-        G2 = 2.0 * self.V - self.V.swapaxes(2,3) # we definitely don't need to store all of this
-        C1 += np.einsum('ma,uavm->uv', self.T1[self.hc,:], G2[self.pa,:,self.ha,self.hc], optimize='optimal')
-        C1 += 0.50 * np.einsum('xe,yx,uevy->uv', self.T1[self.ha,self.pv], self.L1, G2[self.pa,self.pv,self.ha,self.ha], optimize='optimal')
-        C1 -= 0.50 * np.einsum('mx,xy,uyvm->uv', self.T1[self.hc,self.pa], self.L1, G2[self.pa,self.pa,self.ha,self.hc], optimize='optimal')
-
-        C1 += 0.50 * np.einsum('wezx,uvey,xyuv->wz', G2[self.pa,self.pv,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pa], self.L2, optimize='optimal')
-        C1 -= 0.50 * np.einsum('wuzm,mvxy,xyuv->wz', G2[self.pa,self.pa,self.ha,self.hc], self.T2[self.hc,self.ha,self.pa,self.pa], self.L2, optimize='optimal')
         
-    def H2_T_C1a_smallG_df(self, C1):
+    def H2_T_C1a_smallG(self, C1):
         G2 = dict.fromkeys(["avac", "aaac", "avaa"])
         G2["avac"] = 2.0 * self.V["avac"] - np.einsum("uemv->uevm", self.V["avca"], optimize='optimal')
         G2["aaac"] = 2.0 * np.einsum("vumw->uvwm", self.V["aaca"], optimize = 'optimal') - np.einsum("uvmw->uvwm", self.V["aaca"], optimize = 'optimal')
@@ -766,48 +607,8 @@ class DSRG_MRPT2(lib.StreamObject):
 
         C1 += 0.50 * np.einsum('wezx,uvey,xyuv->wz', G2["avaa"], self.T2["aava"], self.L2, optimize='optimal')
         C1 -= 0.50 * np.einsum('wuzm,mvxy,xyuv->wz', G2["aaac"], self.T2["caaa"], self.L2, optimize='optimal')
-
-    def H_T_C2a_smallS(self, C2):
-        C2 += np.einsum('efxy,uvef->uvxy', self.V[self.pv,self.pv,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pv], optimize='optimal')
-        #C2["uvxy"] += H2["wzxy"] * T2["uvwz"];
-        C2 += np.einsum('ewxy,uvew->uvxy', self.V[self.pv,self.pa,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pa], optimize='optimal')
-        C2 += np.einsum('ewyx,vuew->uvxy', self.V[self.pv,self.pa,self.ha,self.ha], self.T2[self.ha,self.ha,self.pv,self.pa], optimize='optimal')
-
-        C2 += np.einsum('uvmn,mnxy->uvxy', self.V[self.pa,self.pa,self.hc,self.hc], self.T2[self.hc,self.hc,self.pa,self.pa], optimize='optimal')
-        #C2["uvxy"] += H2["uvwz"] * T2["wzxy"];
-        C2 += np.einsum('vumw,mwyx->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
-        C2 += np.einsum('uvmw,mwxy->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
-
-        temp = np.einsum('ax,uvay->uvxy', self.F_tilde[:,self.ha], self.T2[self.ha,self.ha,:,self.pa], optimize='optimal')
-        temp -= np.einsum('ui,ivxy->uvxy', self.F_tilde[self.pa,:], self.T2[:,self.ha,self.pa,self.pa], optimize='optimal')
-        temp += np.einsum('ua,avxy->uvxy', self.T1[self.ha,:], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
-        temp -= np.einsum('ix,uviy->uvxy', self.T1[:,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
-
-        temp -= 0.50 * np.einsum('wz,vuaw,azyx->uvxy', self.L1, self.T2[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
-        temp -= 0.50 * np.einsum('wz,izyx,vuiw->uvxy', self.Eta, self.T2[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
-
-        temp += np.einsum('uexm,vmye->uvxy', self.V[self.pa,self.pv,self.ha,self.hc], self.S[self.ha,self.hc,self.pa,self.pv], optimize='optimal')
-        temp += np.einsum('wumx,mvwy->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.S[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
-
-        temp += 0.50 * np.einsum('wz,zvay,auwx->uvxy', self.L1, self.S[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
-        temp -= 0.50 * np.einsum('wz,ivwy,zuix->uvxy', self.L1, self.S[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
-
-        temp -= np.einsum('uemx,vmye->uvxy', self.V[self.pa,self.pv,self.hc,self.ha], self.T2[self.ha,self.hc,self.pa,self.pv], optimize='optimal')
-        temp -= np.einsum('uwmx,mvwy->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
-
-        temp -= 0.50 * np.einsum('wz,zvay,auxw->uvxy', self.L1, self.T2[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
-        temp += 0.50 * np.einsum('wz,ivwy,uzix->uvxy', self.L1, self.T2[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
-
-        temp -= np.einsum('vemx,muye->uvxy', self.V[self.pa,self.pv,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pv], optimize='optimal')
-        temp -= np.einsum('vwmx,muyw->uvxy', self.V[self.pa,self.pa,self.hc,self.ha], self.T2[self.hc,self.ha,self.pa,self.pa], optimize='optimal')
-
-        temp -= 0.50 * np.einsum('wz,uzay,avxw->uvxy', self.L1, self.T2[self.ha,self.ha,:,self.pa], self.V[:,self.pa,self.ha,self.ha], optimize='optimal')
-        temp += 0.50 * np.einsum('wz,iuyw,vzix->uvxy', self.L1, self.T2[:,self.ha,self.pa,self.pa], self.V[self.pa,self.pa,:,self.ha], optimize='optimal')
-
-        C2 += temp
-        C2 += np.einsum('uvxy->vuyx', temp, optimize='optimal')
         
-    def H_T_C2a_smallS_df(self, C2):
+    def H_T_C2a_smallS(self, C2):
         C2 += np.einsum('efxy,uvef->uvxy', self.V["vvaa"], self.T2["aavv"], optimize='optimal')
         #C2["uvxy"] += H2["wzxy"] * T2["uvwz"];
         C2 += np.einsum('ewxy,uvew->uvxy', self.V["vaaa"], self.T2["aava"], optimize='optimal')
@@ -851,20 +652,13 @@ class DSRG_MRPT2(lib.StreamObject):
         hbar1_temp = np.zeros((self.nact,)*2)
         hbar2_temp = np.zeros((self.nact,)*4)
         
-        if (self.df):
-            self.H1_T_C1a_smallS_df(hbar1_temp)
-            self.H2_T_C1a_smallS_df(hbar1_temp)
-            self.H2_T_C1a_smallG_df(hbar1_temp)
-            self.H_T_C2a_smallS_df(hbar2_temp)
-        else:
-            self.H1_T_C1a_smallS(hbar1_temp)
-            self.H2_T_C1a_smallS(hbar1_temp)
-            self.H2_T_C1a_smallG(hbar1_temp)
-            self.H_T_C2a_smallS(hbar2_temp)
+        self.H1_T_C1a_smallS(hbar1_temp)
+        self.H2_T_C1a_smallS(hbar1_temp)
+        self.H2_T_C1a_smallG(hbar1_temp)
+        self.H_T_C2a_smallS(hbar2_temp)
 
         self.hbar1 += 0.5 * hbar1_temp 
         self.hbar1 += 0.5 * hbar1_temp.T
-        #print(self.hbar1) This is correct.
         
         self.hbar2 += 0.5 * hbar2_temp
         self.hbar2 += 0.5 * np.einsum('uvxy->xyuv', hbar2_temp, optimize='optimal')
@@ -875,8 +669,8 @@ class DSRG_MRPT2(lib.StreamObject):
             self.hbar1 -= 0.5 * self.C1_VT2_CCAV
             self.hbar1 -= 0.5 * self.C1_VT2_CCAV.T
         else:
-            hbar1_temp = np.einsum('efzm,wmef->wz', self.V[self.pv, self.pv, self.ha, self.hc], self.S[self.ha, self.hc, self.pv, self.pv], optimize='optimal')
-            hbar1_temp -= np.einsum('wemn,mnze->wz', self.V[self.pa, self.pv, self.hc, self.hc], self.S[self.hc, self.hc, self.pa, self.pv], optimize='optimal')
+            hbar1_temp = np.einsum('efzm,wmef->wz', self.V["vvac"], self.S["acvv"], optimize='optimal')
+            hbar1_temp -= np.einsum('ewnm,nmez->wz', self.V["vacc"], self.S["ccva"], optimize='optimal')
             self.hbar1 += 0.5 * hbar1_temp
             self.hbar1 += 0.5 * hbar1_temp.T
         del hbar1_temp, hbar2_temp
@@ -903,10 +697,7 @@ class DSRG_MRPT2(lib.StreamObject):
 
         if (self.relax_ref):
             self.hbar1 = self.fock[self.active, self.active].copy()
-            if (self.df):
-                self.hbar2 = self.V["aaaa"].copy()
-            else:
-                self.hbar2 = self.V[self.pa, self.pa, self.ha, self.ha].copy()
+            self.hbar2 = self.V["aaaa"].copy()
                 
         self.compute_T2()
         self.compute_T1()
@@ -917,7 +708,7 @@ class DSRG_MRPT2(lib.StreamObject):
         self.e_h1_t2 = self.H1_T2_C0()
         self.e_h2_t1 = self.H2_T1_C0()
         if (self.df):
-            self.e_h2_t2_small = self.H2_T2_C0_T2small_df()
+            self.e_h2_t2_small = self.H2_T2_C0_T2small()
             self.e_h2_t2_cavv = self.E_V_T2_CAVV()
             self.e_h2_t2_ccav = self.E_V_T2_CCAV()
             # [todo]: unified interface for batching: give a list of indices to batch over
@@ -974,7 +765,7 @@ if __name__ == '__main__':
     from pyscf import scf
     from pyscf import mcscf
 
-    test = 3
+    test = 2
 
     if (test == 1):
         mol = gto.M(
@@ -1033,12 +824,12 @@ if __name__ == '__main__':
         ''',
             basis = 'cc-pvdz', spin=0, charge=0
         )
-        mf = scf.RHF(mol).density_fit()
+        mf = scf.RHF(mol)  #.density_fit()
         mf.kernel()
         mc = mcscf.CASSCF(mf, 6, 8) # density_fit() should propagate to mcscf
         mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
         mc.mc2step() 
-        dsrg = DSRG_MRPT2(mc, relax='once', density_fit=True, batch=False, verbose=True) # [todo]: propagate density_fit to DSRG_MRPT2
+        dsrg = DSRG_MRPT2(mc, relax='once', density_fit=False, batch=False, verbose=True) # [todo]: propagate density_fit to DSRG_MRPT2
         e_dsrg_mrpt2 = dsrg.kernel()
         print(f"casscf: {mc.e_tot}")
         #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
@@ -1050,7 +841,7 @@ if __name__ == '__main__':
         #assert np.isclose(dsrg.e_h2_t2_ccav, -0.003545083460275, atol = 1e-6) # This is for DF
         
         print(f"DSRG-MRPT2 correlation energy: {e_dsrg_mrpt2}")
-        #assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6) This is for direct computation
+        assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6) # This is for direct computation
         #assert np.isclose(e_dsrg_mrpt2, -0.257376059270690, atol=1e-6) # This is for DF no relax
         
         print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
