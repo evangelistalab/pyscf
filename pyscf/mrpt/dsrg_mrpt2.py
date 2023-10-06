@@ -25,7 +25,7 @@ from pyscf import fci
 from pyscf.mcscf import mc_ao2mo
 from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
-import math
+import warnings
 
 MACHEPS = 1e-9
 TAYLOR_THRES = 1e-3
@@ -119,7 +119,6 @@ class DSRG_MRPT2(lib.StreamObject):
             This is only available with density fitting.
             
             (Bpq is larger than Bme. I am not sure whether batching would provide any benefit since we always store Bpq.)
-        verbose: bool(default: False)
 
     Examples:
 
@@ -128,7 +127,7 @@ class DSRG_MRPT2(lib.StreamObject):
     >>> DSRG_MRPT2(mc, s=0.5).kernel()
     -0.15708345625685638
     '''
-    def __init__(self, mc, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, density_fit=False, batch=False, verbose=False):
+    def __init__(self, mc, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, density_fit=False, batch=False):
         if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
         self.mc = mc
         self.flow_param = s
@@ -137,13 +136,17 @@ class DSRG_MRPT2(lib.StreamObject):
             raise RuntimeError(f"Relaxation method '{relax}' not recognized. Supported methods are 'none', 'once', 'twice', and 'iterate'.")
         self.df = density_fit
         self.batch = batch
-        self.verbose = verbose
 
         if (isinstance(mc.fcisolver, mcscf.addons.StateAverageFCISolver)):
             self.state_average = True
             self.state_average_weights = mc.fcisolver.weights
             self.state_average_nstates = mc.fcisolver.nstates
             self.ci_vecs = mc.ci
+
+            if (relax=='none'): 
+                relax = 'once'
+                warnings.warn("State-averaged MCSCF is detected. Relaxation is set to 'once'. 'twice' and 'iterate' relaxation modes are also possible.")
+            
         else:
             self.state_average = False
             self.state_average_weights = [1.0]
@@ -347,8 +350,6 @@ class DSRG_MRPT2(lib.StreamObject):
         temp = np.einsum("ev,ue->uv", self.F_tilde[self.pv, self.ha], self.T1[self.ha, self.pv], optimize='optimal') 
         temp -= np.einsum("um,mv->uv", self.F_tilde[self.pa, self.hc], self.T1[self.hc, self.pa], optimize='optimal')
         E += np.einsum("vu,uv->", self.L1, temp, optimize='optimal')
-        if (self.verbose):
-            print(f"FT1, {E}")
         return E
     
     def H1_T2_C0(self):
@@ -356,8 +357,6 @@ class DSRG_MRPT2(lib.StreamObject):
         temp = np.einsum("ex,uvey->uvxy", self.F_tilde[self.pv, self.ha], self.T2["aava"], optimize='optimal')
         temp -= np.einsum("vm,muyx->uvxy", self.F_tilde[self.pa, self.hc], self.T2["caaa"], optimize='optimal')
         E = np.einsum("xyuv,uvxy->", self.L2, temp, optimize='optimal')
-        if (self.verbose):
-            print(f"FT2, {E}")
         return E
     
     def H2_T1_C0(self):
@@ -365,8 +364,6 @@ class DSRG_MRPT2(lib.StreamObject):
         temp = np.einsum("evxy,ue->uvxy", self.V["vaaa"], self.T1[self.ha, self.pv], optimize='optimal')
         temp -= np.einsum("uvmy,mx->uvxy", self.V["aaca"], self.T1[self.hc, self.pa], optimize='optimal')
         E = np.einsum("xyuv,uvxy->", self.L2, temp)
-        if (self.verbose):
-            print(f"VT1, {E}")
         return E
     
     def H2_T2_C0(self):
@@ -374,8 +371,6 @@ class DSRG_MRPT2(lib.StreamObject):
         E += np.einsum("feum,vmfe,uv->", self.V["vvac"], self.S["acvv"], self.L1, optimize='optimal')
         E += np.einsum("evnm,nmeu,uv->", self.V["vacc"], self.S["ccva"], self.Eta, optimize='optimal')
         E += self.H2_T2_C0_T2small()
-        if (self.verbose):
-            print(f"VT2, {E}")
         return E
     
     def H2_T2_C0_T2small(self):
@@ -451,8 +446,6 @@ class DSRG_MRPT2(lib.StreamObject):
                         J_mn[e, f] *= (1.0 + np.exp(-self.flow_param * (denom)**2)) * regularized_denominator(denom, self.flow_param)
                 
                 E += factor * np.einsum("ef,ef->", J_mn, JK_mn, optimize='optimal')
-        if (self.verbose):
-            print(f"VT2_CCVV (DF) with batching, {E}")  
         return E
     
     def E_V_T2_CCVV(self):
@@ -469,8 +462,6 @@ class DSRG_MRPT2(lib.StreamObject):
                         denom = self.e_orb["c"][m] + self.e_orb["c"][n] - self.e_orb["v"][e] - self.e_orb["v"][f]
                         J_m[e,f,n] *= (1.0 + np.exp(-self.flow_param * (denom)**2)) * regularized_denominator(denom, self.flow_param)
             E += np.einsum("efn,efn->", J_m, JK_m, optimize='optimal')
-        if (self.verbose):
-            print(f"VT2_CCVV (DF), {E}")
         return E
     
     def E_V_T2_CAVV(self):
@@ -497,8 +488,6 @@ class DSRG_MRPT2(lib.StreamObject):
                 self.C1_VT2_CAVV = temp.copy()
         del temp
                 
-        if (self.verbose):
-            print(f"VT2_CAVV (DF), {E}") 
         return E
         
     def E_V_T2_CCAV(self):
@@ -528,9 +517,6 @@ class DSRG_MRPT2(lib.StreamObject):
                 self.C1_VT2_CCAV = temp.copy()
                 
         del temp
-        
-        if (self.verbose):
-            print(f"VT2_CCAV (DF), {E}") 
         return E
         
     def H1_T_C1a_smallS(self, C1):
@@ -738,7 +724,7 @@ class DSRG_MRPT2(lib.StreamObject):
             self.relax_eigval = [self.relax_eigval]
             self.ci_vecs = [self.ci_vecs]
         _eci_avg = np.dot(self.relax_eigval[:self.state_average_nstates], self.state_average_weights)
-        self.e_corr += _eci_avg
+        self.e_relax_eigval_shifted = list(np.array(self.relax_eigval[:self.state_average_nstates]) + self.e_tot)
         self.e_tot += _eci_avg
         
         self.e_casci = self.get_casci_energy(self.ci_vecs)
@@ -792,7 +778,7 @@ class DSRG_MRPT2(lib.StreamObject):
 
             self.drsg_mrpt2_iteration()
 
-        return self.e_corr
+        return self.e_tot if self.nrelax == 0 else self.e_relax_eigval_shifted
 
 # register DSRG_MRPT2 in MCSCF
 # [todo]: is this so that we can access fcisolver options?
@@ -805,7 +791,7 @@ if __name__ == '__main__':
     from pyscf import scf
     from pyscf import mcscf
 
-    test = 2
+    test = 5
 
     if (test == 1):
         mol = gto.M(
@@ -875,7 +861,7 @@ if __name__ == '__main__':
         mc = mcscf.CASSCF(mf, 6, 8) # density_fit() should propagate to mcscf
         mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
         mc.mc2step() 
-        dsrg = DSRG_MRPT2(mc, relax='once', density_fit=False, batch=False, verbose=True) # [todo]: propagate density_fit to DSRG_MRPT2
+        dsrg = DSRG_MRPT2(mc, relax='once', density_fit=False, batch=False) # [todo]: propagate density_fit to DSRG_MRPT2
         e_dsrg_mrpt2 = dsrg.kernel()
         print(f"casscf: {mc.e_tot}")
         #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
@@ -892,3 +878,28 @@ if __name__ == '__main__':
         
         print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
         #assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF no relax
+    elif (test==5):
+        mol = gto.M(
+            verbose = 2,
+            atom = [
+            ['O', ( 0., 0.    , 0.   )],
+            ['H', ( 0., -0.757, 0.587)],
+            ['H', ( 0., 0.757 , 0.587)],],
+            basis = '6-31g', spin=0, charge=0, symmetry=True
+        )
+
+        mf = scf.RHF(mol)
+        mf.kernel()
+        print(f'{mf.e_tot=}')
+        mc = mcscf.CASSCF(mf, 4, 4).state_average_([.5,.5])
+        ncore = {'A1':2, 'B1':1}
+        ncas = {'A1':2, 'B1':1,'B2':1}
+        mo = mcscf.sort_mo_by_irrep(mc, mf.mo_coeff, ncas, ncore)
+        mc.kernel(mo)
+        mc.mc2step()
+        print(f'{mc.e_tot=}')
+
+        dsrg = DSRG_MRPT2(mc, relax='none', density_fit=False, batch=False)
+        e_dsrg_mrpt2 = dsrg.kernel()
+        print(f'{dsrg.e_tot=}')
+        print(e_dsrg_mrpt2)
