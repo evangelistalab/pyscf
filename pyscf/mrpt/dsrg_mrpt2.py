@@ -160,6 +160,7 @@ class DSRG_MRPT2(lib.StreamObject):
             self.nrelax = relax_maxiter
 
         self.relax_ref = (self.nrelax > 0)
+        self.relax_conv = relax_conv
 
         # [todo]: remove this restriction
         # if (self.relax_ref and self.df):
@@ -191,9 +192,10 @@ class DSRG_MRPT2(lib.StreamObject):
         self.pa = slice(0,self.nact)
         self.pv = slice(self.nact, self.nact + self.nvirt)
         
+        self.e_casci = mc.e_tot
         self.e_corr = None
-
-        _, self.e_core = mc.get_h1eff()
+        self.h1e_cas, self.ecore = mc.get_h1eff()
+        self.h2e_cas = mc.get_h2eff()
     
     def semi_canonicalize(self):
         # get_fock() uses the state-averaged RDM by default, via mc.fcisolver.make_rdm1()
@@ -685,8 +687,6 @@ class DSRG_MRPT2(lib.StreamObject):
         self.hbar1 -= 0.5 * np.einsum('uxvy,yx->uv', hbar2_temp, self.L1)
 
         del hbar2_temp
-        print(self.e_scalar1)
-        print(self.e_scalar2)
 
         self.hbar1_canon = np.einsum('ip,pq,jq->ij', self.semicanonicalizer[self.active, self.active], self.hbar1, self.semicanonicalizer[self.active, self.active], optimize='optimal')
         self.hbar2_canon = np.einsum('ip,jq,pqrs,kr,ls->ijkl', self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], self.hbar2, self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], optimize='optimal')
@@ -721,20 +721,52 @@ class DSRG_MRPT2(lib.StreamObject):
             self.e_h2_t2 = self.H2_T2_C0()
 
         self.e_corr = self.e_h1_t1 + self.e_h1_t2 + self.e_h2_t1 + self.e_h2_t2
-        self.e_tot = self.mc.e_tot + self.e_corr
+        self.e_tot = self.e_casci + self.e_corr
 
-        if (self.relax_ref): 
-            self.compute_hbar()
-            self.deGNO_ints()
-            # hbar2_canon is in physicist's notation, PySCF uses chemist's notation
-            self.relax_eigval, self.ci_vecs = fci.direct_spin1.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
-                                                                 ecore=self.relax_e_scalar, nroots=self.state_average_nstates)
-            if (self.state_average_nstates == 1):
-                self.relax_eigval = [self.relax_eigval]
-                self.ci_vecs = [self.ci_vecs]
-            _eci_avg = np.dot(self.relax_eigval[:self.state_average_nstates], self.state_average_weights)
-            self.e_corr += _eci_avg
-            self.e_tot += _eci_avg
+    def relax_reference(self):
+        self.compute_hbar()
+        self.deGNO_ints()
+        # hbar2_canon is in physicist's notation, PySCF uses chemist's notation
+        _fcisolver = fci.direct_spin1.FCISolver()
+        #fci.addons.fix_spin_(_fcisolver, ss=0)
+        self.relax_eigval, self.ci_vecs = _fcisolver.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
+                                                                ecore=self.relax_e_scalar, nroots=self.state_average_nstates)
+        #print('E = %.12f  2S+1 = %.7f' %
+        #(self.relax_eigval, _fcisolver.spin_square(self.ci_vecs, 6, (4,4))[1]))
+
+        if (self.state_average_nstates == 1):
+            self.relax_eigval = [self.relax_eigval]
+            self.ci_vecs = [self.ci_vecs]
+        _eci_avg = np.dot(self.relax_eigval[:self.state_average_nstates], self.state_average_weights)
+        self.e_corr += _eci_avg
+        self.e_tot += _eci_avg
+        
+        self.e_casci = self.get_casci_energy(self.ci_vecs)
+
+    def get_casci_energy(self, ci_vecs):
+        e_casci = 0.0
+        for i in range(self.state_average_nstates):
+            e_casci += (self.mc.fcisolver.energy(self.h1e_cas, self.h2e_cas, ci_vecs[i], self.mc.ncas, self.mc.nelecas) + self.ecore) * self.state_average_weights[i]
+
+        return e_casci
+
+    def test_relaxation_convergence(self, n):
+        """
+        Test convergence for reference relaxation.
+        :param n: iteration number (start from 0)
+        :return: True if converged
+        """
+        if n == 1 and self.nrelax == 2:
+            self.converged = True
+
+        if n != 0 and self.nrelax > 2:
+            e_diff_u = abs(self.relax_energies[n][0] - self.relax_energies[n-1][0])
+            e_diff_r = abs(self.relax_energies[n][1] - self.relax_energies[n-1][1])
+            e_diff = abs(self.relax_energies[n][0] - self.relax_energies[n][1])
+            if all(e < self.relax_conv for e in [e_diff_u, e_diff_r, e_diff]):
+                self.converged = True
+
+        return self.converged
 
     def kernel(self):
         self.drsg_mrpt2_iteration()
@@ -743,14 +775,22 @@ class DSRG_MRPT2(lib.StreamObject):
             self.relax_energies = np.zeros((self.nrelax,3)) # [iter, [unrelaxed, relaxed, Eref]]
         else:
             self.relax_energies = np.zeros((1,3))
+            self.relax_energies[0, 0] = self.e_tot
+            self.relax_energies[0, 2] = self.e_casci
 
-        self.relax_energies[0, 0] = self.e_tot
-        self.relax_energies[0, 2] = self.mc.e_tot
-
-        if (self.nrelax == 1): self.converged = True
+        if (not self.relax_ref): self.converged = True
 
         for irelax in range(self.nrelax):
-            pass      
+            self.relax_energies[irelax, 0] = self.e_tot
+            self.relax_energies[irelax, 2] = self.e_casci
+
+            self.relax_reference()
+            self.relax_energies[irelax, 1] = self.e_tot
+
+            if (self.test_relaxation_convergence(irelax)): break
+            if (self.nrelax == 1): break # don't do another DSRG calculation if we're just doing partial relaxation
+
+            self.drsg_mrpt2_iteration()
 
         return self.e_corr
 
@@ -789,32 +829,38 @@ if __name__ == '__main__':
         H 0 0 0
         F 0 0 1.5
         ''',
-            basis = 'sto-3g', spin=0, charge=0
+            basis = 'cc-pvdz', spin=0, charge=0, symmetry=None
         )
         rhf = scf.RHF(mol)
         rhf.kernel()
-        casci = mcscf.CASCI(rhf, 4, 6) # o, e
-        casci.kernel()
-        dsrg = DSRG_MRPT2(casci, relax='once')
+        mc = mcscf.CASCI(rhf, 4, 6)
+        mc.kernel()
+        dsrg = DSRG_MRPT2(mc, relax='iterate')
         e_dsrg_mrpt2 = dsrg.kernel()
+        print(f'{mc.e_tot=}')
         print(f"{e_dsrg_mrpt2=}")
         print(f"{dsrg.e_tot=}")
+        print(f'{dsrg.ncore=}')
+        print(f'{dsrg.nact=}')
+        print(f'{dsrg.nvirt=}')
+        print(dsrg.relax_energies[0,0]-dsrg.relax_energies[0,2])
+        print(dsrg.relax_energies)
         try:
-            assert (np.isclose(dsrg.e_tot, -98.51880426166926, atol=1e-6))
+            assert (np.isclose(dsrg.e_tot, -100.10776811226899, atol=1e-6))
         except:
-            print(f'Warning: dsrg.e_tot is not close to -98.51880426166926')
+            print(f'Warning: dsrg.e_tot is not close to -100.10776811226899')
         
         print(f"{dsrg.e_scalar1=}")
         try:
-            assert (np.isclose(dsrg.e_scalar1, 2.5191661113766437, atol=1e-6))
+            assert (np.isclose(dsrg.e_scalar1, 3.1822327657253213, atol=1e-6))
         except:
-            print(f'Warning: dsrg.e_scalar1 is not close to 2.5191661113766437')
+            print(f'Warning: dsrg.e_scalar1 is not close to 3.1822327657253213')
         print(f"{dsrg.e_scalar2=}")
 
         try:
-            assert (np.isclose(dsrg.e_scalar2, 11.143089786391007, atol=1e-6))
+            assert (np.isclose(dsrg.e_scalar2, 8.842115646625553, atol=1e-6))
         except:
-            print(f'Warning: dsrg.e_scalar2 is not close to 11.143089786391007')
+            print(f'Warning: dsrg.e_scalar2 is not close to 8.842115646625553')
     elif (test==3):
         mol = gto.M(
             verbose = 2,
