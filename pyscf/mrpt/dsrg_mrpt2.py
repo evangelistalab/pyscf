@@ -25,7 +25,6 @@ from pyscf import fci
 from pyscf.mcscf import mc_ao2mo
 from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
-import warnings
 
 MACHEPS = 1e-9
 TAYLOR_THRES = 1e-3
@@ -92,7 +91,7 @@ def get_SF_cu3(G1, G2, G3):
     Returns the spin-free active space 3-body cumulant.
     '''
     L3 = G3.copy() 
-    L3 -= (np.einsum("ps,qrtu -> pqrstu", G1, G2) + np.einsum("qt,prsu->pqrstu", G1, G2) + np.einsum("ru,pqst->pqrstu", G1, G2))
+    L3 -= (np.einsum("ps,qrtu->pqrstu", G1, G2) + np.einsum("qt,prsu->pqrstu", G1, G2) + np.einsum("ru,pqst->pqrstu", G1, G2))
     L3 += 0.5 * (np.einsum("pt,qrsu->pqrstu", G1, G2) + np.einsum("pu,qrts->pqrstu", G1, G2) + np.einsum("qs,prtu->pqrstu", G1, G2) + \
                  np.einsum("qu,prst->pqrstu", G1, G2) + np.einsum("rs,pqut->pqrstu", G1, G2) + np.einsum("rt,pqsu->pqrstu", G1, G2))
     L3 += 2 * np.einsum("ps,qt,ru->pqrstu", G1, G1, G1)
@@ -138,15 +137,12 @@ class DSRG_MRPT2(lib.StreamObject):
         self.batch = batch
 
         if (isinstance(mc.fcisolver, mcscf.addons.StateAverageFCISolver)):
+            if (relax=='none'): 
+                raise RuntimeError("State-averaged MCSCF is detected, please set relax to 'once', 'twice' or 'iterate'.")
             self.state_average = True
             self.state_average_weights = mc.fcisolver.weights
             self.state_average_nstates = mc.fcisolver.nstates
             self.ci_vecs = mc.ci
-
-            if (relax=='none'): 
-                relax = 'once'
-                warnings.warn("State-averaged MCSCF is detected. Relaxation is set to 'once'. 'twice' and 'iterate' relaxation modes are also possible.")
-            
         else:
             self.state_average = False
             self.state_average_weights = [1.0]
@@ -252,7 +248,8 @@ class DSRG_MRPT2(lib.StreamObject):
             _rhf_eri_mo = ao2mo.incore.full(_rhf_eri_ao, self.mc.mo_coeff, False) # (pq|rs)
             _tmp = _rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
             _tmp = np.einsum("aibj->abij", _tmp, dtype='float64')
-            _tmp = np.einsum("pi,qj,pqrs,rk,sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
+            _tmp = np.einsum("pi,qj,pqrs,rk,sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], \
+                             _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
             self.V["vvaa"] = _tmp[self.pv, self.pv, self.ha, self.ha].copy()
             self.V["aacc"] = _tmp[self.pa, self.pa, self.hc, self.hc].copy()
             self.V["avca"] = _tmp[self.pa, self.pv, self.hc, self.ha].copy()
@@ -302,7 +299,8 @@ class DSRG_MRPT2(lib.StreamObject):
             b_vals = self.e_orb[block[1]]
             i_vals = self.e_orb[block[2]]
             j_vals = self.e_orb[block[3]]
-            denom = np.float64(a_vals[:, np.newaxis, np.newaxis, np.newaxis] + b_vals[np.newaxis, :, np.newaxis, np.newaxis] - i_vals[np.newaxis, np.newaxis, :, np.newaxis] - j_vals[np.newaxis, np.newaxis, np.newaxis, :])
+            denom = np.float64(a_vals[:, np.newaxis, np.newaxis, np.newaxis] + b_vals[np.newaxis, :, np.newaxis, np.newaxis]\
+                                - i_vals[np.newaxis, np.newaxis, :, np.newaxis] - j_vals[np.newaxis, np.newaxis, np.newaxis, :])
             tensor *= np.float64(1. + np.exp(-self.flow_param * denom**2))         
     
     def compute_T1(self):
@@ -675,7 +673,8 @@ class DSRG_MRPT2(lib.StreamObject):
         del hbar2_temp
 
         self.hbar1_canon = np.einsum('ip,pq,jq->ij', self.semicanonicalizer[self.active, self.active], self.hbar1, self.semicanonicalizer[self.active, self.active], optimize='optimal')
-        self.hbar2_canon = np.einsum('ip,jq,pqrs,kr,ls->ijkl', self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], self.hbar2, self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], optimize='optimal')
+        self.hbar2_canon = np.einsum('ip,jq,pqrs,kr,ls->ijkl', self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], \
+                                     self.hbar2, self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], optimize='optimal')
 
 
     def drsg_mrpt2_iteration(self):
@@ -899,7 +898,7 @@ if __name__ == '__main__':
         mc.mc2step()
         print(f'{mc.e_tot=}')
 
-        dsrg = DSRG_MRPT2(mc, relax='none', density_fit=False, batch=False)
+        dsrg = DSRG_MRPT2(mc, relax='once', density_fit=False, batch=False)
         e_dsrg_mrpt2 = dsrg.kernel()
         print(f'{dsrg.e_tot=}')
         print(e_dsrg_mrpt2)
