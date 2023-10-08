@@ -25,6 +25,7 @@ from pyscf import fci
 from pyscf.mcscf import mc_ao2mo
 from pyscf import ao2mo
 from pyscf.ao2mo import _ao2mo
+from pyscf import df
 
 MACHEPS = 1e-9
 TAYLOR_THRES = 1e-3
@@ -126,14 +127,18 @@ class DSRG_MRPT2(lib.StreamObject):
     >>> DSRG_MRPT2(mc, s=0.5).kernel()
     -0.15708345625685638
     '''
-    def __init__(self, mc, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, density_fit=False, batch=False):
+    def __init__(self, mc, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, batch=False):
         if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
         self.mc = mc
         self.flow_param = s
         self.relax = relax
         if (relax not in ['none','once','twice','iterate']):
             raise RuntimeError(f"Relaxation method '{relax}' not recognized. Supported methods are 'none', 'once', 'twice', and 'iterate'.")
-        self.df = density_fit
+
+        self.with_df = None
+        self.df = False
+        if (getattr(mc, 'with_df', None)):
+            self = self.density_fit()
         self.batch = batch
 
         if (isinstance(mc.fcisolver, mcscf.addons.StateAverageFCISolver)):
@@ -160,10 +165,6 @@ class DSRG_MRPT2(lib.StreamObject):
 
         self.relax_ref = (self.nrelax > 0)
         self.relax_conv = relax_conv
-
-        # [todo]: remove this restriction
-        # if (self.relax_ref and self.df):
-        #     raise RuntimeError('Relaxation is not supported with density fitting.')
         
         self.form_hbar = self.relax_ref or self.state_average
 
@@ -196,6 +197,19 @@ class DSRG_MRPT2(lib.StreamObject):
         self.h1e_cas, self.ecore = mc.get_h1eff()
         self.h2e_cas = mc.get_h2eff()
     
+    def density_fit(self, auxbasis=None, with_df=None):
+        self.df = True
+        if (with_df is None):
+            if (getattr(self.mc, 'with_df', None) and (auxbasis is None or auxbasis == self.mc.with_df.auxbasis)):
+                self.with_df = self.mc.with_df
+            else:
+                self.with_df = df.DF(self.mc.mol, auxbasis)
+                self.with_df.build()
+        else:
+            self.with_df = with_df
+
+        return self
+
     def semi_canonicalize(self):
         # get_fock() uses the state-averaged RDM by default, via mc.fcisolver.make_rdm1()
         _G1_canon, _G2_canon, _G3_canon = get_SF_RDM_SA(self.ci_vecs, self.state_average_weights, self.nact, self.nelecas)
@@ -232,7 +246,7 @@ class DSRG_MRPT2(lib.StreamObject):
             # If we want to avoid storing tensors with N^3 elements, DiskDF should be implemented.
             self.semi_coeff = np.einsum("pi,up->ui", self.semicanonicalizer, self.mc.mo_coeff, optimize='optimal')
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa"])
-            Bpq_ao = lib.unpack_tril(mc.with_df._cderi) # Aux * ao * ao
+            Bpq_ao = lib.unpack_tril(self.with_df._cderi) # Aux * ao * ao
             self.Bpq = np.einsum("pi,lpq,qj->lij", self.semi_coeff[:, self.part], Bpq_ao, self.semi_coeff[:, self.hole], optimize='optimal') # Aux * Particle * Hole
             self.V["vvaa"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pv, self.ha], self.Bpq[:, self.pv, self.ha], optimize='optimal')
             self.V["aacc"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.hc], self.Bpq[:, self.pa, self.hc], optimize='optimal')
@@ -712,12 +726,12 @@ class DSRG_MRPT2(lib.StreamObject):
         self.compute_hbar()
         self.deGNO_ints()
         # hbar2_canon is in physicist's notation, PySCF uses chemist's notation
-        _fcisolver = fci.direct_spin1.FCISolver()
+        _fcisolver = fci.direct_spin0.FCISolver()
         #fci.addons.fix_spin_(_fcisolver, ss=0)
         self.relax_eigval, self.ci_vecs = _fcisolver.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
                                                                 ecore=self.relax_e_scalar, nroots=self.state_average_nstates)
         #print('E = %.12f  2S+1 = %.7f' %
-        #(self.relax_eigval, _fcisolver.spin_square(self.ci_vecs, 6, (4,4))[1]))
+        #(self.relax_eigval[1], _fcisolver.spin_square(self.ci_vecs[1], self.mc.ncas, self.mc.nelecas)[1]))
 
         if (self.state_average_nstates == 1):
             self.relax_eigval = [self.relax_eigval]
@@ -790,7 +804,7 @@ if __name__ == '__main__':
     from pyscf import scf
     from pyscf import mcscf
 
-    test = 5
+    test = 3
 
     if (test == 1):
         mol = gto.M(
@@ -855,12 +869,12 @@ if __name__ == '__main__':
         ''',
             basis = 'cc-pvdz', spin=0, charge=0
         )
-        mf = scf.RHF(mol)  #.density_fit()
+        mf = scf.RHF(mol).density_fit()
         mf.kernel()
-        mc = mcscf.CASSCF(mf, 6, 8) # density_fit() should propagate to mcscf
+        mc = mcscf.CASSCF(mf, 6, 8)#.density_fit() #should propagate to mcscf
         mc.fix_spin_(ss=0) # we want the singlet state, not the Ms=0 triplet state
         mc.mc2step() 
-        dsrg = DSRG_MRPT2(mc, relax='once', density_fit=False, batch=False) # [todo]: propagate density_fit to DSRG_MRPT2
+        dsrg = DSRG_MRPT2(mc, relax='none', batch=False)#.density_fit('cc-pvdz-jkfit') # [todo]: propagate density_fit to DSRG_MRPT2
         e_dsrg_mrpt2 = dsrg.kernel()
         print(f"casscf: {mc.e_tot}")
         #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
@@ -871,31 +885,33 @@ if __name__ == '__main__':
         #assert np.isclose(dsrg.e_h2_t2_cavv, -0.042801582864407, atol = 1e-6) # This is for DF 
         #assert np.isclose(dsrg.e_h2_t2_ccav, -0.003545083460275, atol = 1e-6) # This is for DF
         
-        print(f"DSRG-MRPT2 correlation energy: {e_dsrg_mrpt2}")
-        assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6) # This is for direct computation
+        #print(f"DSRG-MRPT2 correlation energy: {e_dsrg_mrpt2}")
+        #assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6) # This is for direct computation
         #assert np.isclose(e_dsrg_mrpt2, -0.257376059270690, atol=1e-6) # This is for DF no relax
         
         print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
-        #assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF no relax
+        assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF no relax
     elif (test==5):
         mol = gto.M(
             verbose = 2,
-            atom = [
-            ['O', ( 0., 0.    , 0.   )],
-            ['H', ( 0., -0.757, 0.587)],
-            ['H', ( 0., 0.757 , 0.587)],],
+            atom='''
+                O     0.    0.000    0.1174
+                H     0.    0.757   -0.4696
+                H     0.   -0.757   -0.4696
+            ''',
             basis = '6-31g', spin=0, charge=0, symmetry=True
         )
 
         mf = scf.RHF(mol)
         mf.kernel()
         print(f'{mf.e_tot=}')
-        mc = mcscf.CASSCF(mf, 4, 4).state_average_([.5,.5])
+        mc = mcscf.CASSCF(mf, 4, 4).state_average_([.5,.5],wfnsym='A1')
+        mc.fix_spin_(ss=0)
         ncore = {'A1':2, 'B1':1}
         ncas = {'A1':2, 'B1':1,'B2':1}
         mo = mcscf.sort_mo_by_irrep(mc, mf.mo_coeff, ncas, ncore)
-        mc.kernel(mo)
-        mc.mc2step()
+        #mc.kernel(mo)
+        mc.mc2step(mo)
         print(f'{mc.e_tot=}')
 
         dsrg = DSRG_MRPT2(mc, relax='once', density_fit=False, batch=False)
