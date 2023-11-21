@@ -46,7 +46,8 @@ def taylor_exp(z):
     else:
         return 0.0
     
-def regularized_denominator(x, s): # This function will need to be changed if we want to get rid of for loops in regularization steps.
+def regularized_denominator(x, s): 
+    # This function will need to be changed if we want to get rid of for loops in regularization steps.
     '''
     Returns (1-exp(-s*x^2))/x
     '''
@@ -218,23 +219,27 @@ class DSRG_MRPT2(lib.StreamObject):
         _, self.semicanonicalizer[self.core,self.core] = np.linalg.eigh(_fock_canon[self.core,self.core])
         _, self.semicanonicalizer[self.active,self.active] = np.linalg.eigh(_fock_canon[self.active,self.active])
         _, self.semicanonicalizer[self.virt,self.virt] = np.linalg.eigh(_fock_canon[self.virt,self.virt])
-        self.fock = np.einsum("pi,pq,qj->ij", self.semicanonicalizer, _fock_canon, self.semicanonicalizer, optimize='optimal')
+        
+        self.semicanonicalizer = self.semicanonicalizer.T #  semicanonical * canonical
+        
+        self.fock = np.einsum("ip,pq,jq->ij", self.semicanonicalizer, _fock_canon, self.semicanonicalizer, optimize='optimal')
 
         # RDMs in semi-canonical basis.
         # This should be fine since all indices are active.
         
-        _G1_semi_canon = np.einsum("pi,qj,pq->ij", \
+        _G1_semi_canon = np.einsum("ip,jq,pq->ij", \
                                     self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
                                     _G1_canon, optimize='optimal')
-        _G2_semi_canon = np.einsum("pi,qj,rk,sl,pqrs->ijkl", \
+        _G2_semi_canon = np.einsum("ip,jq,kr,ls,pqrs->ijkl", \
                                     self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
                                     self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
                                     _G2_canon, optimize='optimal')
-        _G3_semi_canon = np.einsum("pi,qj,rk,sl,tm,un,pqrstu->ijklmn", \
+        _G3_semi_canon = np.einsum("ip,jq,kr,ls,mt,nu,pqrstu->ijklmn", \
                                     self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
                                     self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
                                     self.semicanonicalizer[self.active,self.active], self.semicanonicalizer[self.active,self.active], \
                                     _G3_canon, optimize='optimal')
+        
         self.Eta = 2. * np.identity(self.nact) - _G1_semi_canon
         self.L1 = _G1_semi_canon.copy()
         self.L2 = get_SF_cu2(_G1_semi_canon, _G2_semi_canon)
@@ -244,17 +249,17 @@ class DSRG_MRPT2(lib.StreamObject):
         if (self.df):
             # I don't think batching will help here since a N^3 tensor (Bpq_ao) has to be construct explicitly.
             # If we want to avoid storing tensors with N^3 elements, DiskDF should be implemented.
-            self.semi_coeff = np.einsum("pi,up->ui", self.semicanonicalizer, self.mc.mo_coeff, optimize='optimal')
+            self.semi_coeff = np.einsum("ip,up->iu", self.semicanonicalizer, self.mc.mo_coeff, optimize='optimal') # semicanonical * ao
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa"])
             Bpq_ao = lib.unpack_tril(self.with_df._cderi) # Aux * ao * ao
-            self.Bpq = np.einsum("pi,lpq,qj->lij", self.semi_coeff[:, self.part], Bpq_ao, self.semi_coeff[:, self.hole], optimize='optimal') # Aux * Particle * Hole
-            self.V["vvaa"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pv, self.ha], self.Bpq[:, self.pv, self.ha], optimize='optimal')
-            self.V["aacc"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.hc], self.Bpq[:, self.pa, self.hc], optimize='optimal')
-            self.V["avca"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.hc], self.Bpq[:, self.pv, self.ha], optimize='optimal')
-            self.V["avac"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.ha], self.Bpq[:, self.pv, self.hc], optimize='optimal')
-            self.V["vaaa"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pv, self.ha], self.Bpq[:, self.pa, self.ha], optimize='optimal')
-            self.V["aaca"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.hc], self.Bpq[:, self.pa, self.ha], optimize='optimal')
-            self.V["aaaa"] = np.einsum("gai,gbj->abij", self.Bpq[:, self.pa, self.ha], self.Bpq[:, self.pa, self.ha], optimize='optimal')
+            self.Bpq = np.einsum("ip,lpq,jq->ijl", self.semi_coeff[self.part, :], Bpq_ao, self.semi_coeff[self.hole, :], optimize='optimal') # Particle * Hole * Aux
+            self.V["vvaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pv, self.ha, :], self.Bpq[self.pv, self.ha, :], optimize='optimal')
+            self.V["aacc"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pa, self.hc, :], optimize='optimal')
+            self.V["avca"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pv, self.ha, :], optimize='optimal')
+            self.V["avac"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.ha, :], self.Bpq[self.pv, self.hc, :], optimize='optimal')
+            self.V["vaaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pv, self.ha, :], self.Bpq[self.pa, self.ha, :], optimize='optimal')
+            self.V["aaca"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pa, self.ha, :], optimize='optimal')
+            self.V["aaaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.ha, :], self.Bpq[self.pa, self.ha, :], optimize='optimal')
             del Bpq_ao
         else:
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa", "vvcc", "vvac", "vacc"])
@@ -262,7 +267,7 @@ class DSRG_MRPT2(lib.StreamObject):
             _rhf_eri_mo = ao2mo.incore.full(_rhf_eri_ao, self.mc.mo_coeff, False) # (pq|rs)
             _tmp = _rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
             _tmp = np.einsum("aibj->abij", _tmp, dtype='float64')
-            _tmp = np.einsum("pi,qj,pqrs,rk,sl->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], \
+            _tmp = np.einsum("ip,jq,pqrs,kr,ls->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], \
                              _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
             self.V["vvaa"] = _tmp[self.pv, self.pv, self.ha, self.ha].copy()
             self.V["aacc"] = _tmp[self.pa, self.pa, self.hc, self.hc].copy()
@@ -361,21 +366,21 @@ class DSRG_MRPT2(lib.StreamObject):
         E = 2. * np.einsum("am,ma->", self.F_tilde[:, self.hc], self.T1[self.hc, :], optimize='optimal')
         temp = np.einsum("ev,ue->uv", self.F_tilde[self.pv, self.ha], self.T1[self.ha, self.pv], optimize='optimal') 
         temp -= np.einsum("um,mv->uv", self.F_tilde[self.pa, self.hc], self.T1[self.hc, self.pa], optimize='optimal')
-        E += np.einsum("vu,uv->", self.L1, temp, optimize='optimal')
+        E += np.einsum("uv,uv->", self.L1, temp, optimize='optimal')
         return E
     
     def H1_T2_C0(self):
         E = 0.0
         temp = np.einsum("ex,uvey->uvxy", self.F_tilde[self.pv, self.ha], self.T2["aava"], optimize='optimal')
         temp -= np.einsum("vm,muyx->uvxy", self.F_tilde[self.pa, self.hc], self.T2["caaa"], optimize='optimal')
-        E = np.einsum("xyuv,uvxy->", self.L2, temp, optimize='optimal')
+        E = np.einsum("uvxy,uvxy->", self.L2, temp, optimize='optimal')
         return E
     
     def H2_T1_C0(self):
         E = 0.0
         temp = np.einsum("evxy,ue->uvxy", self.V["vaaa"], self.T1[self.ha, self.pv], optimize='optimal')
         temp -= np.einsum("uvmy,mx->uvxy", self.V["aaca"], self.T1[self.hc, self.pa], optimize='optimal')
-        E = np.einsum("xyuv,uvxy->", self.L2, temp)
+        E = np.einsum("uvxy,uvxy->", self.L2, temp)
         return E
     
     def H2_T2_C0(self):
@@ -447,9 +452,9 @@ class DSRG_MRPT2(lib.StreamObject):
                 else:
                     factor = 2.0
                     
-                B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()
-                B_Lf = np.squeeze(self.Bpq[:, self.pv, n]).copy()
-                J_mn = np.einsum("Le,Lf->ef", B_Le, B_Lf, optimize='optimal')
+                B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()
+                B_Lf = np.squeeze(self.Bpq[self.pv, n, :]).copy()
+                J_mn = np.einsum("eL,fL->ef", B_Le, B_Lf, optimize='optimal')
                 JK_mn = 2.0 * J_mn - J_mn.T
                 
                 for e in range(self.nvirt):
@@ -462,10 +467,10 @@ class DSRG_MRPT2(lib.StreamObject):
     
     def E_V_T2_CCVV(self):
         E = 0.0
-        B_Lfn = self.Bpq[:, self.pv, self.hc].copy()
+        B_Lfn = self.Bpq[self.pv, self.hc, :].copy()
         for m in range(self.ncore):
-            B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()
-            J_m = np.einsum("Le,Lfn->efn", B_Le, B_Lfn, optimize='optimal')
+            B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()
+            J_m = np.einsum("eL,fnL->efn", B_Le, B_Lfn, optimize='optimal')
             JK_m = 2.0 * J_m - np.einsum("efn->fen", J_m.copy())
             
             for n in range(self.ncore):
@@ -478,12 +483,12 @@ class DSRG_MRPT2(lib.StreamObject):
     
     def E_V_T2_CAVV(self):
         E = 0.0
-        B_Lfv = self.Bpq[:, self.pv, self.ha].copy()
+        B_Lfv = self.Bpq[self.pv, self.ha, :].copy()
         temp = np.zeros((self.nact,)*2)
         
         for m in range(self.ncore):
-            B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()      
-            J_m = np.einsum("Le,Lfv->efv", B_Le, B_Lfv, optimize='optimal')
+            B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()      
+            J_m = np.einsum("eL,fvL->efv", B_Le, B_Lfv, optimize='optimal')
             JK_m = 2.0 * J_m - np.einsum("efv->fev", J_m.copy())
             
             for u in range(self.nact):
@@ -494,7 +499,7 @@ class DSRG_MRPT2(lib.StreamObject):
                         J_m[e, f, u] *= (1.0 + np.exp(-self.flow_param * (denom)**2))
             temp += np.einsum("efu,efv->uv", J_m, JK_m, optimize='optimal')
                 
-        E += np.einsum("uv,vu->", temp, self.L1, optimize='optimal')
+        E += np.einsum("uv,uv->", temp, self.L1, optimize='optimal')
         
         if (self.form_hbar):
                 self.C1_VT2_CAVV = temp.copy()
@@ -507,14 +512,14 @@ class DSRG_MRPT2(lib.StreamObject):
         temp = np.zeros((self.nact,)*2)
         for m in range(self.ncore):
             for n in range(0, self.ncore):
-                B_Le = np.squeeze(self.Bpq[:, self.pv, m]).copy()
-                B_Lu = np.squeeze(self.Bpq[:, self.pa, n]).copy()
+                B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()
+                B_Lu = np.squeeze(self.Bpq[self.pa, n, :]).copy()
                 
-                B_Le_2 = np.squeeze(self.Bpq[:, self.pv, n]).copy()
-                B_Lu_2 = np.squeeze(self.Bpq[:, self.pa, m]).copy()
+                B_Le_2 = np.squeeze(self.Bpq[self.pv, n, :]).copy()
+                B_Lu_2 = np.squeeze(self.Bpq[self.pa, m, :]).copy()
                 
-                J_mn = np.einsum("Le,Lu->eu", B_Le, B_Lu, optimize='optimal')
-                J_mn_2 = np.einsum("Le,Lu->eu", B_Le_2, B_Lu_2, optimize='optimal')
+                J_mn = np.einsum("eL,uL->eu", B_Le, B_Lu, optimize='optimal')
+                J_mn_2 = np.einsum("eL,uL->eu", B_Le_2, B_Lu_2, optimize='optimal')
                 JK_mn = 2.0 * J_mn - J_mn_2
                 
                 for u in range(self.nact):
@@ -523,7 +528,7 @@ class DSRG_MRPT2(lib.StreamObject):
                         JK_mn[e,u] *= regularized_denominator(denom, self.flow_param)
                         J_mn[e,u] *= (1.0 + np.exp(-self.flow_param * (denom)**2))
                 temp += np.einsum("eu,ev->uv", J_mn, JK_mn, optimize='optimal')
-        E += np.einsum("uv,vu->", temp, self.Eta, optimize='optimal')
+        E += np.einsum("uv,uv->", temp, self.Eta, optimize='optimal')
         
         if (self.form_hbar):
                 self.C1_VT2_CCAV = temp.copy()
@@ -678,17 +683,19 @@ class DSRG_MRPT2(lib.StreamObject):
     def deGNO_ints(self):
         hbar2_temp = 2*self.hbar2 - np.einsum('pqrs->pqsr', self.hbar2, optimize='optimal')
 
-        self.e_scalar1 = - np.einsum('vu,uv->', self.hbar1, self.L1)
+        self.e_scalar1 = - np.einsum('vu,vu->', self.hbar1, self.L1)
         self.e_scalar2 = 0.25 * np.einsum('uv,vyux,xy->', self.L1, hbar2_temp, self.L1) - 0.5 * np.einsum('xyuv,uvxy->', self.hbar2, self.L2)
         self.relax_e_scalar = self.e_scalar1 + self.e_scalar2
 
         self.hbar1 -= 0.5 * np.einsum('uxvy,yx->uv', hbar2_temp, self.L1)
 
         del hbar2_temp
+        
+        _active_semicanonicalizer = self.semicanonicalizer[self.active, self.active].T # Canonical * Semicanonical
 
-        self.hbar1_canon = np.einsum('ip,pq,jq->ij', self.semicanonicalizer[self.active, self.active], self.hbar1, self.semicanonicalizer[self.active, self.active], optimize='optimal')
-        self.hbar2_canon = np.einsum('ip,jq,pqrs,kr,ls->ijkl', self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], \
-                                     self.hbar2, self.semicanonicalizer[self.active, self.active], self.semicanonicalizer[self.active, self.active], optimize='optimal')
+        self.hbar1_canon = np.einsum('ip,pq,jq->ij', _active_semicanonicalizer, self.hbar1, _active_semicanonicalizer, optimize='optimal')
+        self.hbar2_canon = np.einsum('ip,jq,pqrs,kr,ls->ijkl', _active_semicanonicalizer, _active_semicanonicalizer, \
+                                     self.hbar2, _active_semicanonicalizer, _active_semicanonicalizer, optimize='optimal')
 
 
     def drsg_mrpt2_iteration(self):
@@ -802,7 +809,7 @@ if __name__ == '__main__':
     from pyscf import scf
     from pyscf import mcscf
 
-    test = 6
+    test = 8
 
     if (test == 1):
         mol = gto.M(
@@ -875,24 +882,10 @@ if __name__ == '__main__':
         mc.fix_spin_(ss=2) # triplet state
         mc.mc2step()
         print(f"casscf: {mc.e_tot}")
-        dsrg = DSRG_MRPT2(mc, s=1.0, relax='iterate')#.density_fit('cc-pvdz-jkfit')
+        dsrg = DSRG_MRPT2(mc, s=1.0, relax='iterate')
         e_dsrg_mrpt2 = dsrg.kernel()
         print(dsrg.relax_energies)
         print(f'dsrg: {dsrg.e_tot}')
-        #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
-        #assert np.isclose(mc.e_tot, -149.675391362112094, atol = 1e-6) # This is for DF 
-        
-        # Here are tests for DF
-        #assert np.isclose(dsrg.e_h2_t2_ccvv, -0.014939333740318, atol = 1e-6) # This is for DF 
-        #assert np.isclose(dsrg.e_h2_t2_cavv, -0.042801582864407, atol = 1e-6) # This is for DF 
-        #assert np.isclose(dsrg.e_h2_t2_ccav, -0.003545083460275, atol = 1e-6) # This is for DF
-        
-        #print(f"DSRG-MRPT2 correlation energy: {e_dsrg_mrpt2}")
-        #assert np.isclose(e_dsrg_mrpt2, -0.25739463745825364, atol=1e-6) # This is for direct computation
-        #assert np.isclose(e_dsrg_mrpt2, -0.257376059270690, atol=1e-6) # This is for DF no relax
-        
-        #print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
-        #assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF no relax
     elif (test==5):
         mol = gto.M(
             verbose = 2,
@@ -964,3 +957,35 @@ if __name__ == '__main__':
         e_dsrg_mrpt2 = dsrg.kernel()
         print(f'dsrg: {dsrg.e_tot}')
         print(dsrg.relax_energies)
+    elif (test==8):
+        # Density fitting test.
+        mol = gto.M(
+            verbose = 2,
+            atom = '''
+        O 0 0 0
+        O 0 0 1.251
+        ''',
+            basis = 'cc-pvdz', spin=0, charge=0
+        )
+        mf = scf.RHF(mol).density_fit()
+        mf.kernel()
+        print(f'{mf.e_tot=}')
+        mc = mcscf.CASSCF(mf, 6, 8)
+        mc.fix_spin_(ss=0) # singlet state
+        mc.mc2step()
+        print(f"casscf: {mc.e_tot}")
+        dsrg = DSRG_MRPT2(mc, s=0.5, relax='none')
+        e_dsrg_mrpt2 = dsrg.kernel()
+        print(dsrg.relax_energies)
+        print(f'dsrg: {dsrg.e_tot}')
+        #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
+        assert np.isclose(mc.e_tot, -149.675391362112094, atol = 1e-6) # This is for DF 
+        
+        # Here are tests for DF
+        print(dsrg.e_h2_t2_ccvv, dsrg.e_h2_t2_cavv, dsrg.e_h2_t2_ccav)
+        assert np.isclose(dsrg.e_h2_t2_ccvv, -0.014939333740318, atol = 1e-6) # This is for DF 
+        assert np.isclose(dsrg.e_h2_t2_cavv, -0.042801582864407, atol = 1e-6) # This is for DF 
+        assert np.isclose(dsrg.e_h2_t2_ccav, -0.003545083460275, atol = 1e-6) # This is for DF
+        
+        print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
+        assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF no relax
