@@ -18,7 +18,6 @@
 
 import unittest
 import numpy
-import copy
 from pyscf import lib, gto, scf, dft
 from pyscf.tdscf import rhf, rks
 from pyscf import tdscf
@@ -161,7 +160,7 @@ class KnownValues(unittest.TestCase):
         td = rks.TDA(mf_lda)
         td.singlet = False
         es = td.kernel(nstates=5)[0] * 27.2114
-        self.assertAlmostEqual(lib.fp(es), -39.74044291202006, 5)
+        self.assertAlmostEqual(lib.fp(es), -39.988118769202416, 5)
         ref = [9.0139312, 9.0139312,  12.42444659]
         self.assertAlmostEqual(abs(es[:3] - ref).max(), 0, 4)
 
@@ -295,7 +294,7 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(w[0], 0.99997335352278072, 7)
         self.assertAlmostEqual(lib.fp(w), 0.99998775067586554, 7)
 
-        pmol = copy.copy(mol)
+        pmol = mol.copy(deep=False)
         pmol.symmetry = True
         pmol.build(0, 0)
         mf = scf.RHF(pmol).run()

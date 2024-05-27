@@ -397,7 +397,7 @@ def get_kconserv3(cell, kpts, kijkab):
     return kconserv
 
 
-class VectorComposer(object):
+class VectorComposer:
     def __init__(self, dtype):
         """
         Composes vectors.
@@ -442,7 +442,7 @@ class VectorComposer(object):
         return result
 
 
-class VectorSplitter(object):
+class VectorSplitter:
     def __init__(self, vector):
         """
         Splits vectors into pieces.
@@ -548,7 +548,7 @@ class KptsHelper(lib.StreamObject):
             kpt = tuple(kpt)
             kp,kq,kr = kpt
             if not completed[kp,kq,kr]:
-                self.symm_map[kpt] = list()
+                self.symm_map[kpt] = []
                 ks = self.kconserv[kp,kq,kr]
 
                 completed[kp,kq,kr] = True

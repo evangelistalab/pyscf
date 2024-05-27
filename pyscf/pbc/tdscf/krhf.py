@@ -27,7 +27,7 @@ from pyscf.lib import linalg_helper
 from pyscf.lib import logger
 from pyscf.tdscf import rhf
 from pyscf.pbc import scf
-from pyscf.pbc.tdscf.rhf import TDMixin
+from pyscf.pbc.tdscf.rhf import TDBase
 from pyscf.pbc.scf import _response_functions  # noqa
 from pyscf.pbc.lib.kpts_helper import gamma_point, get_kconserv_ria
 from pyscf.pbc.df.df_ao2mo import warn_pbc2d_eri
@@ -37,17 +37,18 @@ from pyscf import __config__
 
 REAL_EIG_THRESHOLD = getattr(__config__, 'pbc_tdscf_rhf_TDDFT_pick_eig_threshold', 1e-3)
 
-class KTDMixin(TDMixin):
+class KTDBase(TDBase):
+    _keys = {'kconserv', 'kshift_lst'}
+
     def __init__(self, mf, kshift_lst=None):
         assert isinstance(mf, scf.khf.KSCF)
-        TDMixin.__init__(self, mf)
+        TDBase.__init__(self, mf)
         warn_pbc2d_eri(mf)
 
         if kshift_lst is None: kshift_lst = [0]
 
         self.kconserv = get_kconserv_ria(mf.cell, mf.kpts)
         self.kshift_lst = kshift_lst
-        self._keys.update(['kconserv', 'kshift_lst'])
 
     def dump_flags(self, verbose=None):
         log = logger.new_logger(self, verbose)
@@ -76,7 +77,7 @@ class KTDMixin(TDMixin):
         log.info('\n')
 
     def check_sanity(self):
-        TDMixin.check_sanity(self)
+        TDBase.check_sanity(self)
         mf = self._scf
         if any([k != 0 for k in self.kshift_lst]):
             if mf.rsjk is not None or not isinstance(mf.with_df, pbcdf.df.DF):
@@ -96,8 +97,7 @@ class KTDMixin(TDMixin):
 
     get_nto = lib.invalid_method('get_nto')
 
-
-class TDA(KTDMixin):
+class TDA(KTDBase):
     conv_tol = getattr(__config__, 'pbc_tdscf_rhf_TDA_conv_tol', 1e-6)
 
     def gen_vind(self, mf, kshift):
@@ -154,14 +154,10 @@ class TDA(KTDMixin):
         kconserv = self.kconserv[kshift]
         e_ia = numpy.concatenate( [x.reshape(-1) for x in
                                    _get_e_ia(mo_energy, mo_occ, kconserv)] )
-        e_ia = numpy.ceil(e_ia / self.deg_eia_thresh) * self.deg_eia_thresh
-        e_ia_uniq = numpy.unique(e_ia)
 
-        e_ia_max = e_ia.max()
         nov = e_ia.size
         nstates = min(nstates, nov)
-        nstates_thresh = min(nstates, e_ia_uniq.size)
-        e_threshold = min(e_ia_max, e_ia_uniq[numpy.argsort(e_ia_uniq)[nstates_thresh-1]])
+        e_threshold = numpy.sort(e_ia)[nstates-1]
         e_threshold += self.deg_eia_thresh
 
         idx = numpy.where(e_ia <= e_threshold)[0]
@@ -205,7 +201,6 @@ class TDA(KTDMixin):
 
             if x0 is None:
                 x0k = self.init_guess(self._scf, kshift, self.nstates)
-                x0k = self.trunc_workspace(vind, x0k, nstates=self.nstates, pick=pickeig)[1]
             else:
                 x0k = x0[i]
 
@@ -336,7 +331,6 @@ class TDHF(TDA):
 
             if x0 is None:
                 x0k = self.init_guess(self._scf, kshift, self.nstates)
-                x0k = self.trunc_workspace(vind, x0k, nstates=self.nstates*2, pick=pickeig)[1]
             else:
                 x0k = x0[i]
 

@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import sys
-import copy
 import warnings
 import numpy
 from pyscf import lib
@@ -511,54 +510,26 @@ def overlap(bra, ket, norb, nelec, s=None):
         bra = transform_ci_for_orbital_rotation(bra, norb, nelec, s)
     return numpy.dot(bra.ravel().conj(), ket.ravel())
 
-class SpinPenaltyFCISolver ():
-    pass
-class SpinPenaltyMod ():
-    def __init__(self,**kwargs):
-        self.__dict__.update (kwargs)
+class SpinPenaltyFCISolver:
+    __name_mixin__ = 'SpinPenalty'
+    _keys = {'ss_value', 'ss_penalty', 'base'}
 
+    def __init__(self, fcibase, shift, ss_value):
+        self.base = fcibase.copy()
+        self.__dict__.update (fcibase.__dict__)
+        self.ss_value = ss_value
+        self.ss_penalty = shift
+        self.davidson_only = self.base.davidson_only = True
 
-def fix_spin_(fciobj, shift=PENALTY, ss=None, **kwargs):
-    r'''If FCI solver cannot stay on spin eigenfunction, this function can
-    add a shift to the states which have wrong spin.
+    def undo_fix_spin(self):
+        obj = lib.view(self, lib.drop_class(self.__class__, SpinPenaltyFCISolver))
+        del obj.base
+        del obj.ss_value
+        del obj.ss_penalty
+        return obj
 
-    .. math::
-
-        (H + shift*S^2) |\Psi\rangle = E |\Psi\rangle
-
-    Args:
-        fciobj : An instance of :class:`FCISolver`
-
-    Kwargs:
-        shift : float
-            Level shift for states which have different spin
-        ss : number
-            S^2 expection value == s*(s+1)
-
-    Returns
-            A modified FCI object based on fciobj.
-    '''
-    import types
-    from pyscf.fci import direct_uhf
-    if isinstance(fciobj, direct_uhf.FCISolver):
-        raise NotImplementedError
-
-    if 'ss_value' in kwargs:
-        sys.stderr.write('fix_spin_: kwarg "ss_value" will be removed in future release. '
-                         'It was replaced by "ss"\n')
-        ss_value = kwargs['ss_value']
-    else:
-        ss_value = ss
-
-    if isinstance (fciobj, SpinPenaltyFCISolver):
-        # recursion avoidance
-        fciobj.ss_penalty = shift
-        fciobj.ss_value = ss
-        return fciobj
-    ismodule = isinstance (fciobj, types.ModuleType)
-
-    if (not ismodule and 'contract_2e' in getattr(fciobj, '__dict__', {})):
-        del fciobj.contract_2e  # To avoid initialize twice
+    def base_contract_2e (self, *args, **kwargs):
+        return super().contract_2e (*args, **kwargs)
 
     def contract_2e(self, eri, fcivec, norb, nelec, link_index=None, **kwargs):
         if isinstance(nelec, (int, numpy.number)):
@@ -584,43 +555,59 @@ def fix_spin_(fciobj, shift=PENALTY, ss=None, **kwargs):
             tmp = None
         ci1 *= self.ss_penalty
 
-        ci0 = self.base_contract_2e (eri, fcivec, norb, nelec, link_index, **kwargs)
+        ci0 = super().contract_2e (eri, fcivec, norb, nelec, link_index, **kwargs)
         ci1 += ci0.reshape(fcivec.shape)
         return ci1
 
-    if ismodule:
-        base_contract_2e = fciobj.contract_2e
-        self = SpinPenaltyMod (ss_penalty=shift, ss_value=ss_value,
-                               contract_ss=fciobj.contract_ss,
-                               base_contract_2e=base_contract_2e)
-        from functools import partial
-        fciobj.davidson_only = True
-        fciobj.contract_2e = partial (contract_2e, self)
-        return fciobj
+def fix_spin(fciobj, shift=PENALTY, ss=None, **kwargs):
+    r'''If FCI solver cannot stay on spin eigenfunction, this function can
+    add a shift to the states which have wrong spin.
+
+    .. math::
+
+        (H + shift*S^2) |\Psi\rangle = E |\Psi\rangle
+
+    Args:
+        fciobj : An instance of :class:`FCISolver`
+
+    Kwargs:
+        shift : float
+            Level shift for states which have different spin
+        ss : number
+            S^2 expection value == s*(s+1)
+
+    Returns
+            A modified FCI object based on fciobj.
+    '''
+    import types
+    from pyscf.fci import direct_uhf
+    if isinstance(fciobj, direct_uhf.FCISolver):
+        raise NotImplementedError
+
+    if isinstance (fciobj, types.ModuleType):
+        raise DeprecationWarning('fix_spin should be applied on FCI object only')
+
+    if 'ss_value' in kwargs:
+        sys.stderr.write('fix_spin_: kwarg "ss_value" will be removed in future release. '
+                         'It was replaced by "ss"\n')
+        ss_value = kwargs['ss_value']
     else:
-        fciobj_class = fciobj.__class__
+        ss_value = ss
 
-    class FCISolver (fciobj_class, SpinPenaltyFCISolver):
+    if isinstance (fciobj, SpinPenaltyFCISolver):
+        # recursion avoidance
+        fciobj.ss_penalty = shift
+        fciobj.ss_value = ss_value
+        return fciobj
 
-        def __init__(self, fcibase):
-            self.base = copy.copy (fcibase)
-            self.__dict__.update (fcibase.__dict__)
-            self.ss_value = ss_value
-            self.ss_penalty = shift
-            keys = set (('ss_value', 'ss_penalty', 'base'))
-            self._keys = self._keys.union (keys)
-            self.davidson_only = self.base.davidson_only = True
+    return lib.set_class(SpinPenaltyFCISolver(fciobj, shift, ss_value),
+                         (SpinPenaltyFCISolver, fciobj.__class__))
 
-        def base_contract_2e (self, *args, **kwargs):
-            return self.base.__class__.contract_2e (self, *args, **kwargs)
-
-    FCISolver.contract_2e = contract_2e
-    new_fciobj = FCISolver (fciobj)
-    fciobj.__class__ = new_fciobj.__class__
-    fciobj.__dict__.update (new_fciobj.__dict__)
+def fix_spin_(fciobj, shift=.1, ss=None):
+    sp_fci = fix_spin(fciobj, shift, ss)
+    fciobj.__class__ = sp_fci.__class__
+    fciobj.__dict__ = sp_fci.__dict__
     return fciobj
-def fix_spin(fciobj, shift=.1, ss=None):
-    return fix_spin_(copy.copy(fciobj), shift, ss)
 
 def transform_ci_for_orbital_rotation(ci, norb, nelec, u):
     '''
@@ -671,22 +658,15 @@ def transform_ci(ci, nelec, u):
     nb_new = cistring.num_strings(norb_new, nelecb)
     ci = ci.reshape(na_old, nb_old)
 
-    one_particle_strs_old = numpy.asarray([1 << i for i in range(norb_old)])
-    one_particle_strs_new = numpy.asarray([1 << i for i in range(norb_new)])
-
     if neleca == 0:
         trans_ci_a = numpy.ones((1, 1))
     else:
         trans_ci_a = numpy.zeros((na_old, na_new), dtype=ua.dtype)
-        strs_old = numpy.asarray(cistring.make_strings(range(norb_old), neleca))
-
-        # Unitary transformation array trans_ci is the overlap between two sets of CI basis.
-        occ_masks_old = (strs_old[:,None] & one_particle_strs_old) != 0
+        occ_masks_old = _init_occ_masks(norb_old, neleca, na_old)
         if norb_old == norb_new:
             occ_masks_new = occ_masks_old
         else:
-            strs_new = numpy.asarray(cistring.make_strings(range(norb_new), neleca))
-            occ_masks_new = (strs_new[:,None] & one_particle_strs_new) != 0
+            occ_masks_new = _init_occ_masks(norb_new, neleca, na_new)
 
         # Perform
         #for i in range(na_old): # old basis
@@ -705,14 +685,11 @@ def transform_ci(ci, nelec, u):
         trans_ci_b = numpy.ones((1, 1))
     else:
         trans_ci_b = numpy.zeros((nb_old, nb_new), dtype=ub.dtype)
-        strs_old = numpy.asarray(cistring.make_strings(range(norb_old), nelecb))
-
-        occ_masks_old = (strs_old[:,None] & one_particle_strs_old) != 0
+        occ_masks_old = _init_occ_masks(norb_old, nelecb, nb_old)
         if norb_old == norb_new:
             occ_masks_new = occ_masks_old
         else:
-            strs_new = numpy.asarray(cistring.make_strings(range(norb_new), nelecb))
-            occ_masks_new = (strs_new[:,None] & one_particle_strs_new) != 0
+            occ_masks_new = _init_occ_masks(norb_new, nelecb, nb_new)
 
         occ_idx_all_strs = numpy.where(occ_masks_new)[1].reshape(nb_new,nelecb)
         for i in range(nb_old):
@@ -738,5 +715,17 @@ def _unpack_nelec(nelec, spin=None):
         nelec = neleca, nelecb
     return nelec
 
-del (LARGE_CI_TOL, RETURN_STRS, PENALTY)
+def _init_occ_masks(norb, nelec, nci):
+    one_particle_strs = numpy.asarray(cistring.make_strings(range(norb), 1))
+    strs = numpy.asarray(cistring.make_strings(range(norb), nelec))
+    if norb < 64:
+        occ_masks = (strs[:,None] & one_particle_strs) != 0
+    else:
+        occ_masks = numpy.zeros((nci, norb), dtype=bool)
+        for i in range(nci):
+            for j in range(norb):
+                if one_particle_strs[j][0] in strs[i]:
+                    occ_masks[i,j] = True
+    return occ_masks
 
+del (LARGE_CI_TOL, RETURN_STRS, PENALTY)

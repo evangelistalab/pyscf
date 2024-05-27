@@ -181,7 +181,7 @@ def get_ab(mf, mo_energy=None, mo_coeff=None, mo_occ=None):
         from pyscf.dft import xc_deriv
         ni = mf._numint
         ni.libxc.test_deriv_order(mf.xc, 2, raise_error=True)
-        if mf.nlc or ni.libxc.is_nlc(mf.xc):
+        if mf.do_nlc():
             logger.warn(mf, 'NLC functional found in DFT object.  Its second '
                         'deriviative is not available. Its contribution is '
                         'not included in the response function.')
@@ -579,7 +579,7 @@ def _contract_multipole(tdobj, ints, hermi=True, xy=None):
     return pol
 
 
-class TDMixin(rhf.TDMixin):
+class TDBase(rhf.TDBase):
 
     @lib.with_doc(get_ab.__doc__)
     def get_ab(self, mf=None):
@@ -596,7 +596,7 @@ class TDMixin(rhf.TDMixin):
 
 
 @lib.with_doc(rhf.TDA.__doc__)
-class TDA(TDMixin):
+class TDA(TDBase):
 
     singlet = None
 
@@ -619,10 +619,6 @@ class TDA(TDMixin):
         viridxb = numpy.where(mo_occ[1]==0)[0]
         e_ia_a = (mo_energy[0][viridxa,None] - mo_energy[0][occidxa]).T
         e_ia_b = (mo_energy[1][viridxb,None] - mo_energy[1][occidxb]).T
-        # make degenerate excitations equal for later selection by energy
-        e_ia_a = numpy.ceil(e_ia_a / self.deg_eia_thresh) * self.deg_eia_thresh
-        e_ia_b = numpy.ceil(e_ia_b / self.deg_eia_thresh) * self.deg_eia_thresh
-        e_ia_max = max(numpy.max(e_ia_a), numpy.max(e_ia_b))
 
         if wfnsym is not None and mol.symmetry:
             if isinstance(wfnsym, str):
@@ -635,11 +631,9 @@ class TDA(TDMixin):
             e_ia_b[(orbsymb_in_d2h[occidxb,None] ^ orbsymb_in_d2h[viridxb]) != wfnsym] = 1e99
 
         e_ia = numpy.hstack((e_ia_a.ravel(), e_ia_b.ravel()))
-        e_ia_uniq = numpy.unique(e_ia)
         nov = e_ia.size
         nstates = min(nstates, nov)
-        nstates_thresh = min(nstates, e_ia_uniq.size)
-        e_threshold = min(e_ia_max, e_ia_uniq[numpy.argsort(e_ia_uniq)[nstates_thresh-1]])
+        e_threshold = numpy.sort(e_ia)[nstates-1]
         e_threshold += self.deg_eia_thresh
 
         idx = numpy.where(e_ia <= e_threshold)[0]
@@ -669,7 +663,6 @@ class TDA(TDMixin):
 
         if x0 is None:
             x0 = self.init_guess(self._scf, self.nstates)
-            x0 = self.trunc_workspace(vind, x0, nstates=self.nstates, pick=pickeig)[1]
 
         self.converged, self.e, x1 = \
                 lib.davidson1(vind, x0, precond,
@@ -696,6 +689,8 @@ class TDA(TDMixin):
         log.timer('TDA', *cpu0)
         self._finalize()
         return self.e, self.xy
+
+    to_gpu = lib.to_gpu
 
 CIS = TDA
 
@@ -828,7 +823,6 @@ class TDHF(TDA):
 
         if x0 is None:
             x0 = self.init_guess(self._scf, self.nstates)
-            x0 = self.trunc_workspace(vind, x0, nstates=self.nstates, pick=pickeig)[1]
 
         self.converged, w, x1 = \
                 lib.davidson_nosym1(vind, x0, precond,
@@ -865,6 +859,8 @@ class TDHF(TDA):
         log.timer('TDDFT', *cpu0)
         self._finalize()
         return self.e, self.xy
+
+    to_gpu = lib.to_gpu
 
 RPA = TDUHF = TDHF
 

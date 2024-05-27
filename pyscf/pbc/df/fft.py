@@ -18,7 +18,6 @@
 
 '''Density expansion on plane waves'''
 
-import copy
 import numpy
 from pyscf import lib
 from pyscf import gto
@@ -31,6 +30,7 @@ from pyscf.pbc.df import fft_ao2mo
 from pyscf.pbc.df import fft_jk
 from pyscf.pbc.df import aft
 from pyscf.pbc.df.aft import _check_kpts
+from pyscf.pbc.lib.kpts import KPoints
 from pyscf.pbc.lib.kpts_helper import is_zero
 from pyscf import __config__
 
@@ -156,6 +156,11 @@ def get_pp(mydf, kpts=None):
 class FFTDF(lib.StreamObject):
     '''Density expansion on plane waves
     '''
+
+    _keys = {
+        'cell', 'kpts', 'grids', 'mesh', 'blockdim', 'exxdiv',
+    }
+
     def __init__(self, cell, kpts=numpy.zeros((1,3))):
         from pyscf.pbc.dft import gen_grid
         from pyscf.pbc.dft import numint
@@ -164,6 +169,8 @@ class FFTDF(lib.StreamObject):
         self.verbose = cell.verbose
         self.max_memory = cell.max_memory
 
+        if isinstance(kpts, KPoints):
+            kpts = kpts.kpts
         self.kpts = kpts
 
         self.grids = gen_grid.UniformGrids(cell)
@@ -183,7 +190,6 @@ class FFTDF(lib.StreamObject):
         self.exxdiv = None
         self._numint = numint.KNumInt()
         self._rsh_df = {}  # Range separated Coulomb DF objects
-        self._keys = set(self.__dict__.keys())
 
     @property
     def mesh(self):
@@ -318,7 +324,7 @@ class FFTDF(lib.StreamObject):
     get_mo_pairs_G = get_mo_pairs = fft_ao2mo.get_mo_pairs_G
 
     def update_mf(self, mf):
-        mf = copy.copy(mf)
+        mf = mf.copy()
         mf.with_df = self
         return mf
 
@@ -352,3 +358,5 @@ class FFTDF(lib.StreamObject):
         return ngrids * 2
 
     range_coulomb = aft.AFTDF.range_coulomb
+
+    to_gpu = lib.to_gpu
