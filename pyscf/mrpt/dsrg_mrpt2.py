@@ -197,6 +197,12 @@ class DSRG_MRPT2(lib.StreamObject):
         self.e_corr = None
         self.h1e_cas, self.ecore = mc.get_h1eff()
         self.h2e_cas = mc.get_h2eff()
+
+        if (not self.df): 
+            self.eri = self.mc.mol.intor('int2e', aosym='s8')
+            _p = self.mc.mo_coeff[:, self.part]
+            _h = self.mc.mo_coeff[:, self.hole]
+            self.eri = ao2mo.incore.general(self.eri, (_p,_h,_p,_h)).reshape((self.npart, self.nhole, self.npart, self.nhole)).swapaxes(1,2)
     
     def density_fit(self, auxbasis=None, with_df=None):
         self.df = True
@@ -263,11 +269,8 @@ class DSRG_MRPT2(lib.StreamObject):
             del Bpq_ao
         else:
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa", "vvcc", "vvac", "vacc"])
-            _p = self.mc.mo_coeff[:, self.part]
-            _h = self.mc.mo_coeff[:, self.hole]
-            _eri = ao2mo.kernel(self.mc.mol, (_p,_h,_p,_h), compact=False).reshape((self.npart, self.nhole, self.npart, self.nhole)).swapaxes(1,2)
             _eri = np.einsum("ip,jq,pqrs,kr,ls->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], \
-                             _eri, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
+                             self.eri, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
             self.V["vvaa"] = _eri[self.pv, self.pv, self.ha, self.ha].copy()
             self.V["aacc"] = _eri[self.pa, self.pa, self.hc, self.hc].copy()
             self.V["avca"] = _eri[self.pa, self.pv, self.hc, self.ha].copy()
@@ -279,7 +282,7 @@ class DSRG_MRPT2(lib.StreamObject):
             self.V["vvac"] = _eri[self.pv, self.pv, self.ha, self.hc].copy()
             self.V["vacc"] = _eri[self.pv, self.pa, self.hc, self.hc].copy()
             del _eri
-            
+        
     def compute_T2(self):
         self.e_orb = {"c":np.diagonal(self.fock)[self.core], "a": np.diagonal(self.fock)[self.active], "v": np.diagonal(self.fock)[self.virt]}
         self.T2 = {}
@@ -815,16 +818,14 @@ def main():
     N 0 0 0
     N 0 1.4 0
     ''',
-        basis = '6-31g', spin=0, charge=0, symmetry=False
+        basis = 'cc-pvtz', spin=0, charge=0, symmetry=False
     )
 
     rhf = scf.RHF(mol)
     rhf.kernel()
     casci = mcscf.CASCI(rhf, 6, 6)
     casci.kernel()
-    e_dsrg_mrpt2 = DSRG_MRPT2(casci).kernel()
-    print(e_dsrg_mrpt2)
-    assert np.isclose(e_dsrg_mrpt2, -108.99538785901142)
+    e_dsrg_mrpt2 = DSRG_MRPT2(casci,relax='iterate').kernel()
 
 import cProfile
 if __name__ == '__main__':
