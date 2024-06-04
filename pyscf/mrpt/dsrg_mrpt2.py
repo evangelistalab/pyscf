@@ -263,9 +263,11 @@ class DSRG_MRPT2(lib.StreamObject):
             del Bpq_ao
         else:
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa", "vvcc", "vvac", "vacc"])
-            _eri = ao2mo.addons.restore('s1',ao2mo.kernel(self.mc.mol, self.mc.mo_coeff),self.nao).swapaxes(1,2)
+            _p = self.mc.mo_coeff[:, self.part]
+            _h = self.mc.mo_coeff[:, self.hole]
+            _eri = ao2mo.kernel(self.mc.mol, (_p,_h,_p,_h), compact=False).reshape((self.npart, self.nhole, self.npart, self.nhole)).swapaxes(1,2)
             _eri = np.einsum("ip,jq,pqrs,kr,ls->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], \
-                             _eri[self.part, self.part, self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
+                             _eri, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
             self.V["vvaa"] = _eri[self.pv, self.pv, self.ha, self.ha].copy()
             self.V["aacc"] = _eri[self.pa, self.pa, self.hc, self.hc].copy()
             self.V["avca"] = _eri[self.pa, self.pv, self.hc, self.ha].copy()
@@ -827,3 +829,4 @@ def main():
 import cProfile
 if __name__ == '__main__':
     cProfile.run("main()", sort="cumtime")
+    # main()
