@@ -263,23 +263,20 @@ class DSRG_MRPT2(lib.StreamObject):
             del Bpq_ao
         else:
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa", "vvcc", "vvac", "vacc"])
-            _rhf_eri_ao = self.mc.mol.intor('int2e_sph', aosym='s1') # Chemist's notation
-            _rhf_eri_mo = ao2mo.incore.full(_rhf_eri_ao, self.mc.mo_coeff, False) # (pq|rs)
-            _tmp = _rhf_eri_mo[self.part, self.hole, self.part, self.hole].copy()
-            _tmp = np.einsum("aibj->abij", _tmp, dtype='float64')
-            _tmp = np.einsum("ip,jq,pqrs,kr,ls->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], \
-                             _tmp, self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
-            self.V["vvaa"] = _tmp[self.pv, self.pv, self.ha, self.ha].copy()
-            self.V["aacc"] = _tmp[self.pa, self.pa, self.hc, self.hc].copy()
-            self.V["avca"] = _tmp[self.pa, self.pv, self.hc, self.ha].copy()
-            self.V["avac"] = _tmp[self.pa, self.pv, self.ha, self.hc].copy()
-            self.V["vaaa"] = _tmp[self.pv, self.pa, self.ha, self.ha].copy()
-            self.V["aaca"] = _tmp[self.pa, self.pa, self.hc, self.ha].copy()
-            self.V["aaaa"] = _tmp[self.pa, self.pa, self.ha, self.ha].copy()
-            self.V["vvcc"] = _tmp[self.pv, self.pv, self.hc, self.hc].copy()
-            self.V["vvac"] = _tmp[self.pv, self.pv, self.ha, self.hc].copy()
-            self.V["vacc"] = _tmp[self.pv, self.pa, self.hc, self.hc].copy()
-            del _rhf_eri_ao, _rhf_eri_mo, _tmp
+            _eri = ao2mo.addons.restore('s1',ao2mo.kernel(self.mc.mol, self.mc.mo_coeff),self.nao).swapaxes(1,2)
+            _eri = np.einsum("ip,jq,pqrs,kr,ls->ijkl", self.semicanonicalizer[self.part, self.part], self.semicanonicalizer[self.part, self.part], \
+                             _eri[self.part, self.part, self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], self.semicanonicalizer[self.hole, self.hole], optimize='optimal') 
+            self.V["vvaa"] = _eri[self.pv, self.pv, self.ha, self.ha].copy()
+            self.V["aacc"] = _eri[self.pa, self.pa, self.hc, self.hc].copy()
+            self.V["avca"] = _eri[self.pa, self.pv, self.hc, self.ha].copy()
+            self.V["avac"] = _eri[self.pa, self.pv, self.ha, self.hc].copy()
+            self.V["vaaa"] = _eri[self.pv, self.pa, self.ha, self.ha].copy()
+            self.V["aaca"] = _eri[self.pa, self.pa, self.hc, self.ha].copy()
+            self.V["aaaa"] = _eri[self.pa, self.pa, self.ha, self.ha].copy()
+            self.V["vvcc"] = _eri[self.pv, self.pv, self.hc, self.hc].copy()
+            self.V["vvac"] = _eri[self.pv, self.pv, self.ha, self.hc].copy()
+            self.V["vacc"] = _eri[self.pv, self.pa, self.hc, self.hc].copy()
+            del _eri
             
     def compute_T2(self):
         self.e_orb = {"c":np.diagonal(self.fock)[self.core], "a": np.diagonal(self.fock)[self.active], "v": np.diagonal(self.fock)[self.virt]}
@@ -805,7 +802,8 @@ class DSRG_MRPT2(lib.StreamObject):
 from pyscf.mcscf import casci
 casci.CASCI.DSRG_MRPT2 = DSRG_MRPT2
 
-if __name__ == '__main__':
+# if __name__ == '__main__':
+def main():
     from pyscf import gto
     from pyscf import scf
     from pyscf import mcscf
@@ -823,4 +821,9 @@ if __name__ == '__main__':
     casci = mcscf.CASCI(rhf, 6, 6)
     casci.kernel()
     e_dsrg_mrpt2 = DSRG_MRPT2(casci).kernel()
-    assert np.isclose(e_dsrg_mrpt2, -0.127274453305632)
+    print(e_dsrg_mrpt2)
+    assert np.isclose(e_dsrg_mrpt2, -108.99538785901142)
+
+import cProfile
+if __name__ == '__main__':
+    cProfile.run("main()", sort="cumtime")
