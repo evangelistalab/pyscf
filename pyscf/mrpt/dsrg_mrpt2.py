@@ -789,7 +789,9 @@ class DSRG_MRPT2(lib.StreamObject):
             self.relax_energies[irelax, 1] = self.e_tot
 
             if (self.test_relaxation_convergence(irelax)): break
-            if (self.nrelax == 1): break # don't do another DSRG calculation if we're just doing partial relaxation
+            if (self.nrelax == 1): 
+                self.converged = True
+                break # don't do another DSRG calculation if we're just doing partial relaxation
 
             self.drsg_mrpt2_iteration()
         
@@ -803,189 +805,22 @@ class DSRG_MRPT2(lib.StreamObject):
 from pyscf.mcscf import casci
 casci.CASCI.DSRG_MRPT2 = DSRG_MRPT2
 
-
 if __name__ == '__main__':
     from pyscf import gto
     from pyscf import scf
     from pyscf import mcscf
 
-    test = 8
+    mol = gto.M(
+        atom = '''
+    N 0 0 0
+    N 0 1.4 0
+    ''',
+        basis = '6-31g', spin=0, charge=0, symmetry=False
+    )
 
-    if (test == 1):
-        mol = gto.M(
-            atom = '''
-        N 0 0 0
-        N 0 1.4 0
-        ''',
-            basis = '6-31g', spin=0, charge=0, symmetry=False
-        )
-
-        rhf = scf.RHF(mol)
-        rhf.kernel()
-        casci = mcscf.CASCI(rhf, 6, 6)
-        casci.kernel()
-        e_dsrg_mrpt2 = DSRG_MRPT2(casci).kernel()
-        assert np.isclose(e_dsrg_mrpt2, -0.127274453305632)
-    elif (test == 2):
-        mol = gto.M(
-            verbose = 2,
-            atom = '''
-        H 0 0 0
-        F 0 0 1.5
-        ''',
-            basis = 'cc-pvdz', spin=0, charge=0, symmetry=None
-        )
-        rhf = scf.RHF(mol)
-        rhf.kernel()
-        mc = mcscf.CASCI(rhf, 4, 6)
-        mc.kernel()
-        
-        dsrg = DSRG_MRPT2(mc, relax='iterate')
-        e_dsrg_mrpt2 = dsrg.kernel()
-        print(f'{mc.e_tot=}')
-        print(f"{e_dsrg_mrpt2=}")
-        print(f"{dsrg.e_tot=}")
-        print(f'{dsrg.ncore=}')
-        print(f'{dsrg.nact=}')
-        print(f'{dsrg.nvirt=}')
-        print(dsrg.relax_energies[0,0]-dsrg.relax_energies[0,2])
-        print(dsrg.relax_energies)
-        try:
-            assert (np.isclose(dsrg.e_tot, -100.10776811226899, atol=1e-6))
-        except:
-            print(f'Warning: dsrg.e_tot is not close to -100.10776811226899')
-        
-        print(f"{dsrg.e_scalar1=}")
-        try:
-            assert (np.isclose(dsrg.e_scalar1, 3.1822327657253213, atol=1e-6))
-        except:
-            print(f'Warning: dsrg.e_scalar1 is not close to 3.1822327657253213')
-        print(f"{dsrg.e_scalar2=}")
-
-        try:
-            assert (np.isclose(dsrg.e_scalar2, 8.842115646625553, atol=1e-6))
-        except:
-            print(f'Warning: dsrg.e_scalar2 is not close to 8.842115646625553')
-    elif (test==3):
-        mol = gto.M(
-            verbose = 2,
-            atom = '''
-        O 0 0 0
-        O 0 0 1.251
-        ''',
-            basis = 'cc-pvdz', spin=2, charge=0, symmetry='d2h'
-        )
-        mf = scf.ROHF(mol)#.density_fit()
-        mf.kernel()
-        print(f'{mf.e_tot=}')
-        mc = mcscf.CASSCF(mf, 6, 8)
-        mc.fix_spin_(ss=2) # triplet state
-        mc.mc2step()
-        print(f"casscf: {mc.e_tot}")
-        dsrg = DSRG_MRPT2(mc, s=1.0, relax='iterate')
-        e_dsrg_mrpt2 = dsrg.kernel()
-        print(dsrg.relax_energies)
-        print(f'dsrg: {dsrg.e_tot}')
-    elif (test==5):
-        mol = gto.M(
-            verbose = 2,
-            atom='''
-                O     0.    0.000    0.1174
-                H     0.    0.757   -0.4696
-                H     0.   -0.757   -0.4696
-            ''',
-            basis = '6-31g', spin=0, charge=0, symmetry=True
-        )
-
-        mf = scf.RHF(mol)
-        mf.kernel()
-        print(f'{mf.e_tot=}')
-        mc = mcscf.CASSCF(mf, 4, 4).state_average_([.5,.5],wfnsym='A1')
-        mc.fix_spin_(ss=0)
-        ncore = {'A1':2, 'B1':1}
-        ncas = {'A1':2, 'B1':1,'B2':1}
-        mo = mcscf.sort_mo_by_irrep(mc, mf.mo_coeff, ncas, ncore)
-        #mc.kernel(mo)
-        mc.mc2step(mo)
-        print(f'{mc.e_tot=}')
-
-        dsrg = DSRG_MRPT2(mc, relax='once', density_fit=False, batch=False)
-        e_dsrg_mrpt2 = dsrg.kernel()
-        print(f'{dsrg.e_tot=}')
-        print(e_dsrg_mrpt2)
-    elif (test==6):
-        mol = gto.M(
-            verbose = 2,
-            atom = '''
-        Be 0 0 0
-        H 0 0 1.0
-        ''',
-            basis = '6-31g', spin=1, charge=0, symmetry='c2v'
-        )
-        mf = scf.ROHF(mol)
-        mf.conv_tol
-        mf.kernel()
-        print(f'{mf.e_tot=}')
-        mc = mcscf.CASSCF(mf, 5, 3)#.density_fit() #should propagate to mcscf
-        mc.fix_spin_(ss=0.75)
-        mc.mc2step() 
-        dsrg = DSRG_MRPT2(mc, s=1.0, relax='twice')#.density_fit('cc-pvdz-jkfit') # [todo]: propagate density_fit to DSRG_MRPT2
-        
-        e_dsrg_mrpt2 = dsrg.kernel()
-        print(f"casscf: {mc.e_tot}")
-        print(f'dsrg: {dsrg.e_tot}')
-        print(dsrg.relax_energies)
-    elif (test==7):
-        mol = gto.M(
-            atom = '''
-        O        0.000000    0.000000    0.117790
-        H        0.000000    0.755453   -0.471161
-        H        0.000000   -0.755453   -0.471161''',
-            basis = 'ccpvdz',
-            charge = 1,
-            spin = 1,  # = 2S = spin_up - spin_down
-            symmetry = 'c2v'
-        )
-
-        mf = scf.ROHF(mol)
-        mf.kernel()
-        print(f'{mf.e_tot=}')
-        mc = mcscf.CASSCF(mf, 4, 3)
-        mc.mc2step()
-        print(f'{mc.e_tot=}')
-        dsrg = DSRG_MRPT2(mc, s=1.0, relax='iterate')
-        e_dsrg_mrpt2 = dsrg.kernel()
-        print(f'dsrg: {dsrg.e_tot}')
-        print(dsrg.relax_energies)
-    elif (test==8):
-        # Density fitting test.
-        mol = gto.M(
-            verbose = 2,
-            atom = '''
-        O 0 0 0
-        O 0 0 1.251
-        ''',
-            basis = 'cc-pvdz', spin=0, charge=0
-        )
-        mf = scf.RHF(mol).density_fit()
-        mf.kernel()
-        print(f'{mf.e_tot=}')
-        mc = mcscf.CASSCF(mf, 6, 8)
-        mc.fix_spin_(ss=0) # singlet state
-        mc.mc2step()
-        print(f"casscf: {mc.e_tot}")
-        dsrg = DSRG_MRPT2(mc, s=0.5, relax='none')
-        e_dsrg_mrpt2 = dsrg.kernel()
-        print(dsrg.relax_energies)
-        print(f'dsrg: {dsrg.e_tot}')
-        #assert np.isclose(mc.e_tot, -149.675640632305, atol=1e-6)  This is for direct computation
-        assert np.isclose(mc.e_tot, -149.675391362112094, atol = 1e-6) # This is for DF 
-        
-        # Here are tests for DF
-        print(dsrg.e_h2_t2_ccvv, dsrg.e_h2_t2_cavv, dsrg.e_h2_t2_ccav)
-        assert np.isclose(dsrg.e_h2_t2_ccvv, -0.014939333740318, atol = 1e-6) # This is for DF 
-        assert np.isclose(dsrg.e_h2_t2_cavv, -0.042801582864407, atol = 1e-6) # This is for DF 
-        assert np.isclose(dsrg.e_h2_t2_ccav, -0.003545083460275, atol = 1e-6) # This is for DF
-        
-        print(f"DSRG-MRPT2 total energy: {dsrg.e_tot}") 
-        assert np.isclose(dsrg.e_tot, -149.932767421382778, atol=1e-6) # This is for DF no relax
+    rhf = scf.RHF(mol)
+    rhf.kernel()
+    casci = mcscf.CASCI(rhf, 6, 6)
+    casci.kernel()
+    e_dsrg_mrpt2 = DSRG_MRPT2(casci).kernel()
+    assert np.isclose(e_dsrg_mrpt2, -0.127274453305632)
