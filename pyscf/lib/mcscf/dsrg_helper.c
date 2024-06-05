@@ -40,7 +40,7 @@ void compute_T2_block(double *t2, double *ei, double *ej, double *ea, double *eb
 {
         int i,j,a,b;
         double* pt2;
-#pragma omp for schedule(dynamic, 2)
+#pragma omp for schedule(dynamic, 10) collapse(2)
         for (i = 0; i < ni; i++) {
                 for (j = 0; j < nj; j++) {
                         for (a = 0; a < na; a++) {
@@ -61,7 +61,7 @@ void compute_T1(double *t1, double *ei, double *ea, double flow_param, int ni, i
 {
         int i, a;
         double *pt1;
-#pragma omp for schedule(dynamic, 2)
+#pragma omp for schedule(dynamic, 10) collapse(2)
         for (i = 0; i < ni; i++) {
                 for (a = 0; a < na; a++) {
                         double denom = ei[i] - ea[a];
