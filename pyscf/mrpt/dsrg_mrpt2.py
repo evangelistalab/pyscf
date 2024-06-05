@@ -338,11 +338,7 @@ class DSRG_MRPT2(lib.StreamObject):
         self.T1[self.hc, self.pa] -= 0.5 * np.einsum("iwau,vw,uv->ia", self.S["caaa"], self.fock[self.active,self.active], self.L1, optimize='optimal')
         self.T1[self.hc, self.pv] -= 0.5 * np.einsum("wmue,vw,uv->me", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
         self.T1[self.ha, self.pv] -= 0.5 * np.einsum("iwau,vw,uv->ia", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')   
-        # Shuhang Li: This is inefficient.
-        # for i in range(self.nhole):
-        #     for k in range(self.npart):
-        #         denom_t1 = np.float64(np.diagonal(self.fock)[i] - np.diagonal(self.fock)[self.ncore+k])
-        #         self.T1[i, k] *= np.float64(regularized_denominator(denom_t1, self.flow_param))
+
         _ei = np.diagonal(self.fock)[self.hole].copy()
         _ea = np.diagonal(self.fock)[self.part].copy()
         libmc.compute_T1(self.T1.ctypes.data_as(ctypes.c_void_p), 
@@ -459,6 +455,8 @@ class DSRG_MRPT2(lib.StreamObject):
         # The three-index integral is created in the semicanonicalization step. 
         # (me|nf) * [2 * (me|nf) - (mf|ne)] * [1 - e^(-2 * s * D)] / D
         # Batching: for a given m and n, form B(ef) = Bm(L|e) * Bn(L|f)
+        _ec = self.e_orb["c"].copy()
+        _ev = self.e_orb["v"].copy()
         for m in range(self.ncore):
             for n in range(m, self.ncore):
                 if m == n:
@@ -466,32 +464,42 @@ class DSRG_MRPT2(lib.StreamObject):
                 else:
                     factor = 2.0
                     
-                B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()
-                B_Lf = np.squeeze(self.Bpq[self.pv, n, :]).copy()
-                J_mn = np.einsum("eL,fL->ef", B_Le, B_Lf, optimize='optimal')
+                J_mn = np.einsum("eL,fL->ef", \
+                        np.squeeze(self.Bpq[self.pv, m, :]), np.squeeze(self.Bpq[self.pv, n, :]), \
+                        optimize='optimal').copy()
                 JK_mn = 2.0 * J_mn - J_mn.T
-                
-                for e in range(self.nvirt):
-                    for f in range(self.nvirt):
-                        denom = self.e_orb["c"][m] + self.e_orb["c"][n] - self.e_orb["v"][e] - self.e_orb["v"][f]
-                        J_mn[e, f] *= (1.0 + np.exp(-self.flow_param * (denom)**2)) * regularized_denominator(denom, self.flow_param)
-                
+                                
+                libmc.renormalize_CCVV_batch(J_mn.ctypes.data_as(ctypes.c_void_p),
+                                     ctypes.c_double(_ec[m] + _ev[n]),
+                                     _ev.ctypes.data_as(ctypes.c_void_p),
+                                     ctypes.c_double(self.flow_param),
+                                     ctypes.c_int(self.nvirt))
+
                 E += factor * np.einsum("ef,ef->", J_mn, JK_mn, optimize='optimal')
         return E
     
     def E_V_T2_CCVV(self):
         E = 0.0
         B_Lfn = self.Bpq[self.pv, self.hc, :].copy()
+        _ec = self.e_orb["c"].copy()
+        _ev = self.e_orb["v"].copy()
         for m in range(self.ncore):
-            B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()
-            J_m = np.einsum("eL,fnL->efn", B_Le, B_Lfn, optimize='optimal')
+            J_m = np.einsum("eL,fnL->efn", np.squeeze(self.Bpq[self.pv, m, :]), B_Lfn, optimize='optimal').copy()
             JK_m = 2.0 * J_m - np.einsum("efn->fen", J_m.copy())
             
-            for n in range(self.ncore):
-                for e in range(self.nvirt):
-                    for f in range(self.nvirt):
-                        denom = self.e_orb["c"][m] + self.e_orb["c"][n] - self.e_orb["v"][e] - self.e_orb["v"][f]
-                        J_m[e,f,n] *= (1.0 + np.exp(-self.flow_param * (denom)**2)) * regularized_denominator(denom, self.flow_param)
+            libmc.renormalize_CCVV(J_m.ctypes.data_as(ctypes.c_void_p),
+                                   ctypes.c_double(_ec[m]),
+                                    _ev.ctypes.data_as(ctypes.c_void_p),
+                                    _ec.ctypes.data_as(ctypes.c_void_p),
+                                    ctypes.c_double(self.flow_param),
+                                    ctypes.c_int(self.nvirt),
+                                    ctypes.c_int(self.ncore))
+
+            # for n in range(self.ncore):
+            #     for e in range(self.nvirt):
+            #         for f in range(self.nvirt):
+            #             denom = self.e_orb["c"][m] + self.e_orb["c"][n] - self.e_orb["v"][e] - self.e_orb["v"][f]
+            #             J_m[e,f,n] *= (1.0 + np.exp(-self.flow_param * (denom)**2)) * regularized_denominator(denom, self.flow_param)
             E += np.einsum("efn,efn->", J_m, JK_m, optimize='optimal')
         return E
     
@@ -499,18 +507,22 @@ class DSRG_MRPT2(lib.StreamObject):
         E = 0.0
         B_Lfv = self.Bpq[self.pv, self.ha, :].copy()
         temp = np.zeros((self.nact,)*2)
+        _ec = self.e_orb["c"].copy()
+        _ev = self.e_orb["v"].copy()
+        _ea = self.e_orb["a"].copy()
         
         for m in range(self.ncore):
-            B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()      
-            J_m = np.einsum("eL,fvL->efv", B_Le, B_Lfv, optimize='optimal')
-            JK_m = 2.0 * J_m - np.einsum("efv->fev", J_m.copy())
+            J_m = np.einsum("eL,fvL->efv", np.squeeze(self.Bpq[self.pv, m, :]), B_Lfv, optimize='optimal').copy()
+            JK_m = 2.0 * J_m - np.einsum("efv->fev", J_m).copy()
             
-            for u in range(self.nact):
-                for e in range(self.nvirt):
-                    for f in range(self.nvirt):
-                        denom = self.e_orb["c"][m] + self.e_orb["a"][u] - self.e_orb["v"][e] - self.e_orb["v"][f]
-                        JK_m[e, f, u] *= regularized_denominator(denom, self.flow_param)
-                        J_m[e, f, u] *= (1.0 + np.exp(-self.flow_param * (denom)**2))
+            libmc.renormalize_CAVV(JK_m.ctypes.data_as(ctypes.c_void_p),
+                                   J_m.ctypes.data_as(ctypes.c_void_p),
+                                    ctypes.c_double(_ec[m]),
+                                    _ev.ctypes.data_as(ctypes.c_void_p),
+                                    _ea.ctypes.data_as(ctypes.c_void_p),
+                                    ctypes.c_double(self.flow_param),
+                                    ctypes.c_int(self.nvirt),
+                                    ctypes.c_int(self.nact))
             temp += np.einsum("efu,efv->uv", J_m, JK_m, optimize='optimal')
                 
         E += np.einsum("uv,uv->", temp, self.L1, optimize='optimal')
@@ -524,23 +536,24 @@ class DSRG_MRPT2(lib.StreamObject):
     def E_V_T2_CCAV(self):
         E = 0.0
         temp = np.zeros((self.nact,)*2)
+        _ec = self.e_orb["c"].copy()
+        _ev = self.e_orb["v"].copy()
+        _ea = self.e_orb["a"].copy()
         for m in range(self.ncore):
             for n in range(0, self.ncore):
-                B_Le = np.squeeze(self.Bpq[self.pv, m, :]).copy()
-                B_Lu = np.squeeze(self.Bpq[self.pa, n, :]).copy()
-                
-                B_Le_2 = np.squeeze(self.Bpq[self.pv, n, :]).copy()
-                B_Lu_2 = np.squeeze(self.Bpq[self.pa, m, :]).copy()
-                
-                J_mn = np.einsum("eL,uL->eu", B_Le, B_Lu, optimize='optimal')
-                J_mn_2 = np.einsum("eL,uL->eu", B_Le_2, B_Lu_2, optimize='optimal')
+                J_mn = np.einsum("eL,uL->eu", np.squeeze(self.Bpq[self.pv, m, :]), np.squeeze(self.Bpq[self.pa, n, :]), optimize='optimal').copy()
+                J_mn_2 = np.einsum("eL,uL->eu", np.squeeze(self.Bpq[self.pv, n, :]), np.squeeze(self.Bpq[self.pa, m, :]), optimize='optimal').copy()
                 JK_mn = 2.0 * J_mn - J_mn_2
                 
-                for u in range(self.nact):
-                    for e in range(self.nvirt):
-                        denom = self.e_orb["c"][m] + self.e_orb["c"][n] - self.e_orb["a"][u] - self.e_orb["v"][e]
-                        JK_mn[e,u] *= regularized_denominator(denom, self.flow_param)
-                        J_mn[e,u] *= (1.0 + np.exp(-self.flow_param * (denom)**2))
+                libmc.renormalize_CCAV(JK_mn.ctypes.data_as(ctypes.c_void_p),
+                                        J_mn.ctypes.data_as(ctypes.c_void_p),
+                                        ctypes.c_double(_ec[m] + _ec[n]),
+                                        _ev.ctypes.data_as(ctypes.c_void_p),
+                                        _ea.ctypes.data_as(ctypes.c_void_p),
+                                        ctypes.c_double(self.flow_param),
+                                        ctypes.c_int(self.nvirt),
+                                        ctypes.c_int(self.nact))
+
                 temp += np.einsum("eu,ev->uv", J_mn, JK_mn, optimize='optimal')
         E += np.einsum("uv,uv->", temp, self.Eta, optimize='optimal')
         
@@ -826,23 +839,59 @@ def main():
     from pyscf import mcscf
     import time
 
-    mol = gto.M(
-        atom = '''
-    N 0 0 0
-    N 0 1.4 0
-    ''',
-        basis = 'cc-pvqz', spin=0, charge=0, symmetry=False
-    )
+    # mol = gto.M(
+    #     atom = '''
+    # N 0 0 0
+    # N 0 1.4 0
+    # ''',
+    #     basis = 'cc-pvqz', spin=0, charge=0, symmetry=False
+    # )
+
+    # mf = scf.RHF(mol)
+    # mf.kernel()
+    # mc = mcscf.CASSCF(mf, 6, 6)
+    # mc.kernel()
+    # t0 = time.time()
+    # e_dsrg_mrpt2 = DSRG_MRPT2(mc, relax='iterate').kernel()
+    # print(f'{time.time()-t0=}')
+    # print(f'{e_dsrg_mrpt2=}')
+    # assert np.isclose(e_dsrg_mrpt2, -109.31258070603721, atol=1e-8)
+
+    mol = gto.Mole()
+    mol.build(
+        atom = [
+        ["C", (-0.65830719,  0.61123287, -0.00800148)],
+        ["C", ( 0.73685281,  0.61123287, -0.00800148)],
+        ["C", ( 1.43439081,  1.81898387, -0.00800148)],
+        ["C", ( 0.73673681,  3.02749287, -0.00920048)],
+        ["C", (-0.65808819,  3.02741487, -0.00967948)],
+        ["C", (-1.35568919,  1.81920887, -0.00868348)],
+        ["H", (-1.20806619, -0.34108413, -0.00755148)],
+        ["H", ( 1.28636081, -0.34128013, -0.00668648)],
+        ["H", ( 2.53407081,  1.81906387, -0.00736748)],
+        ["H", ( 1.28693681,  3.97963587, -0.00925948)],
+        ["H", (-1.20821019,  3.97969587, -0.01063248)],
+        ["H", (-2.45529319,  1.81939187, -0.00886348)],],
+        basis = 'ccpvtz'
+)
 
     mf = scf.RHF(mol)
-    mf.kernel()
-    mc = mcscf.CASSCF(mf, 6, 6)
-    mc.kernel()
+    mf.conv_tol = 1e-8
+    e = mf.kernel()
+
+    #
+    # DFCASSCF uses density-fitting 2e integrals overall, regardless the
+    # underlying mean-filed object
+    #
+    mc = mcscf.DFCASSCF(mf, 6, 6)
+    mo = mc.sort_mo([17,20,21,22,23,30])
+    mc.kernel(mo)
+    print('E(CAS) = %.12f, ref = -230.845892901370' % mc.e_tot)
+
     t0 = time.time()
-    e_dsrg_mrpt2 = DSRG_MRPT2(mc, relax='iterate').kernel()
+    e_dsrg_mrpt2 = DSRG_MRPT2(mc).kernel()
     print(f'{time.time()-t0=}')
     print(f'{e_dsrg_mrpt2=}')
-    assert np.isclose(e_dsrg_mrpt2, -109.31258070603721, atol=1e-8)
 
 import cProfile
 if __name__ == '__main__':

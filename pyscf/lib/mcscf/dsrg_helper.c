@@ -71,3 +71,79 @@ void compute_T1(double *t1, double *ei, double *ea, double flow_param, int ni, i
         }
 }
 }
+
+void renormalize_CCVV_batch(double *Jcc, double ecc, double *ev, double flow_param, int nv)
+{
+#pragma omp parallel
+{
+        int r,s;
+        double *pJcc;
+#pragma omp for schedule(dynamic, 10) collapse(2)
+        for (r = 0; r < nv; r++) {
+                for (s = 0; s < nv; s++) {
+                        double denom = ecc - ev[r] + ev[s];
+                        pJcc = Jcc + r * nv + s;
+                        *pJcc *= (1. + exp(-flow_param*denom*denom)) * regularized_denominator(denom,flow_param);
+                }
+        }
+}
+}
+
+void renormalize_CCVV(double *Jvvc, double ec_, double *ev, double *ec, double flow_param, int nv, int nc)
+{
+#pragma omp parallel
+{
+        int q,r,s;
+        double *pJvvc;
+#pragma omp for schedule(dynamic, 10) collapse(2)
+        for (q = 0; q < nv; q++) {
+                for (r = 0; r < nv; r++) {
+                        for (s = 0; s < nc; s++){
+                                double denom = ec_ + ec[s] - ev[q] - ev[r];
+                                pJvvc = Jvvc + q * nv * nc + r * nc + s;
+                                *pJvvc *= (1. + exp(-flow_param*denom*denom)) * regularized_denominator(denom,flow_param);
+                        }
+                }
+        }
+}
+}
+
+void renormalize_CAVV(double *JKvva, double *Jvva, double e_, double *ev, double *ea, double flow_param, int nv, int na)
+{
+#pragma omp parallel
+{
+        int e,f,u;
+        double *pJKvva, *pJvva;
+#pragma omp for schedule(dynamic, 10) collapse(2)
+        for (e = 0; e < nv; e++){
+                for (f = 0; f < nv; f++){
+                        for (u = 0; u < na; u++){
+                                double denom = e_ + ea[u] - ev[e] - ev[f];
+                                pJKvva = JKvva + e * nv * na + f * na + u;
+                                pJvva = Jvva + e * nv * na + f * na + u;
+                                *pJKvva *= regularized_denominator(denom,flow_param);
+                                *pJvva *= (1. + exp(-flow_param*denom*denom));
+                        }
+                }
+        }
+}
+}
+
+void renormalize_CCAV(double *JKva, double *Jva, double e_, double *ev, double *ea, double flow_param, int nv, int na)
+{
+#pragma omp parallel
+{
+        int e,u;
+        double *pJKva, *pJva;
+#pragma omp for schedule(dynamic, 10) collapse(2)
+        for (e = 0; e < nv; e++){
+                for (u = 0; u < na; u++){
+                        double denom = e_ - ea[u] - ev[e];
+                        pJKva = JKva + e * na + u;
+                        pJva = Jva + e * na + u;
+                        *pJKva *= regularized_denominator(denom,flow_param);
+                        *pJva *= (1. + exp(-flow_param*denom*denom));
+                }
+        }
+}
+}
