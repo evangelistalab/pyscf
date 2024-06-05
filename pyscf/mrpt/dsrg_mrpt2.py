@@ -339,12 +339,20 @@ class DSRG_MRPT2(lib.StreamObject):
         self.T1[self.hc, self.pv] -= 0.5 * np.einsum("wmue,vw,uv->me", self.S["acav"], self.fock[self.active,self.active], self.L1, optimize='optimal')
         self.T1[self.ha, self.pv] -= 0.5 * np.einsum("iwau,vw,uv->ia", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')   
         # Shuhang Li: This is inefficient.
-        for i in range(self.nhole):
-            for k in range(self.npart):
-                denom_t1 = np.float64(np.diagonal(self.fock)[i] - np.diagonal(self.fock)[self.ncore+k])
-                self.T1[i, k] *= np.float64(regularized_denominator(denom_t1, self.flow_param))
+        # for i in range(self.nhole):
+        #     for k in range(self.npart):
+        #         denom_t1 = np.float64(np.diagonal(self.fock)[i] - np.diagonal(self.fock)[self.ncore+k])
+        #         self.T1[i, k] *= np.float64(regularized_denominator(denom_t1, self.flow_param))
+        _ei = np.diagonal(self.fock)[self.hole].copy()
+        _ea = np.diagonal(self.fock)[self.part].copy()
+        libmc.compute_T1(self.T1.ctypes.data_as(ctypes.c_void_p), 
+                         _ei.ctypes.data_as(ctypes.c_void_p), 
+                         _ea.ctypes.data_as(ctypes.c_void_p), 
+                         ctypes.c_double(self.flow_param),
+                         ctypes.c_int(self.nhole),
+                         ctypes.c_int(self.npart))
         self.T1[self.ha,self.pa] = 0
-    
+
     def renormalize_F(self):
         _tmp = np.zeros((self.npart, self.nhole), dtype='float64')
         _tmp = self.fock[self.part,self.hole].copy()
@@ -822,17 +830,17 @@ def main():
     N 0 0 0
     N 0 1.4 0
     ''',
-        basis = 'cc-pvtz', spin=0, charge=0, symmetry=False
+        basis = 'cc-pvqz', spin=0, charge=0, symmetry=False
     )
 
-    rhf = scf.RHF(mol)
-    rhf.kernel()
-    casci = mcscf.CASCI(rhf, 6, 6)
-    casci.kernel()
-    e_dsrg_mrpt2 = DSRG_MRPT2(casci, relax='iterate').kernel()
+    mf = scf.RHF(mol)
+    mf.kernel()
+    mc = mcscf.CASSCF(mf, 6, 6)
+    mc.kernel()
+    e_dsrg_mrpt2 = DSRG_MRPT2(mc, relax='iterate').kernel()
     print(f'{e_dsrg_mrpt2=}')
 
 import cProfile
 if __name__ == '__main__':
-    # cProfile.run("main()", sort="cumtime")
-    main()
+    cProfile.run("main()", sort="cumtime")
+    # main()

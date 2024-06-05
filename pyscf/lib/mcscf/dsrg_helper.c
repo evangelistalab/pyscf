@@ -53,3 +53,19 @@ void compute_T2_block(double *t2, double *ep, double *eq, double *er, double *es
         }
 }
 }
+
+void compute_T1(double *t1, double *ei, double *ej, double flow_param, int ni, int nj)
+{
+#pragma omp parallel
+{
+        int i, a;
+#pragma omp for schedule(dynamic, 10)
+        for (i = 0; i < ni; i++) {
+                for (a = 0; a < nj; a++) {
+                        float denom = ei[i] - ej[a];
+                        *t1 *= regularized_denominator(denom,flow_param);
+                        t1++;
+                }
+        }
+}
+}
