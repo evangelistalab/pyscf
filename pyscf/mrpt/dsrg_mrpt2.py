@@ -824,6 +824,7 @@ def main():
     from pyscf import gto
     from pyscf import scf
     from pyscf import mcscf
+    import time
 
     mol = gto.M(
         atom = '''
@@ -837,10 +838,13 @@ def main():
     mf.kernel()
     mc = mcscf.CASSCF(mf, 6, 6)
     mc.kernel()
+    t0 = time.time()
     e_dsrg_mrpt2 = DSRG_MRPT2(mc, relax='iterate').kernel()
+    print(f'{time.time()-t0=}')
     print(f'{e_dsrg_mrpt2=}')
+    assert np.isclose(e_dsrg_mrpt2, -109.31258070603721, atol=1e-8)
 
 import cProfile
 if __name__ == '__main__':
-    cProfile.run("main()", sort="cumtime")
-    # main()
+    # cProfile.run("main()", sort="cumtime")
+    main()

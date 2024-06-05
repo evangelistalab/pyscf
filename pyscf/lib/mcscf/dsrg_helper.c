@@ -34,19 +34,20 @@ double regularized_denominator(double x, double s)
         }
 }
 
-void compute_T2_block(double *t2, double *ep, double *eq, double *er, double *es, double flow_param, int np, int nq, int nr, int ns)
+void compute_T2_block(double *t2, double *ei, double *ej, double *ea, double *eb, double flow_param, int ni, int nj, int na, int nb)
 {
 #pragma omp parallel
 {
-        int p, q, r, s;
-#pragma omp for schedule(dynamic, 50)
-        for (p = 0; p < np; p++) {
-                for (q = 0; q < nq; q++) {
-                        for (r = 0; r < nr; r++) {
-                                for (s = 0; s < ns; s++) {
-                                        float denom = ep[p] + eq[q] - er[r] - es[s];
-                                        *t2 *= regularized_denominator(denom,flow_param);
-                                        t2++;
+        int i,j,a,b;
+        double* pt2;
+#pragma omp for schedule(dynamic, 2)
+        for (i = 0; i < ni; i++) {
+                for (j = 0; j < nj; j++) {
+                        for (a = 0; a < na; a++) {
+                                for (b = 0; b < nb; b++) {
+                                        double denom = ei[i] + ej[j] - ea[a] - eb[b];
+                                        pt2 = t2 + i * nj * na * nb + j * na * nb + a * nb + b;;
+                                        *pt2 *= regularized_denominator(denom,flow_param);
                                 }
                         }
                 }
@@ -54,17 +55,18 @@ void compute_T2_block(double *t2, double *ep, double *eq, double *er, double *es
 }
 }
 
-void compute_T1(double *t1, double *ei, double *ej, double flow_param, int ni, int nj)
+void compute_T1(double *t1, double *ei, double *ea, double flow_param, int ni, int na)
 {
 #pragma omp parallel
 {
         int i, a;
-#pragma omp for schedule(dynamic, 10)
+        double *pt1;
+#pragma omp for schedule(dynamic, 2)
         for (i = 0; i < ni; i++) {
-                for (a = 0; a < nj; a++) {
-                        float denom = ei[i] - ej[a];
-                        *t1 *= regularized_denominator(denom,flow_param);
-                        t1++;
+                for (a = 0; a < na; a++) {
+                        double denom = ei[i] - ea[a];
+                        pt1 = t1 + i * na + a;
+                        *pt1 *= regularized_denominator(denom,flow_param);
                 }
         }
 }
