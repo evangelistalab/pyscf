@@ -18,6 +18,7 @@
 #          Zijun Zhao <brian.zhaozijun@gmail.com>
 #
 
+import ctypes
 import numpy as np
 from pyscf import lib, mcscf
 from pyscf.lib import logger
@@ -29,6 +30,8 @@ from pyscf import df
 
 MACHEPS = 1e-9
 TAYLOR_THRES = 1e-3
+
+libmc = lib.load_library('libmcscf')
 
 def taylor_exp(z):
     '''
@@ -47,7 +50,6 @@ def taylor_exp(z):
         return 0.0
     
 def regularized_denominator(x, s): 
-    # This function will need to be changed if we want to get rid of for loops in regularization steps.
     '''
     Returns (1-exp(-s*x^2))/x
     '''
@@ -58,11 +60,9 @@ def regularized_denominator(x, s):
         return (1. - np.exp(-s * x**2)) / x
     
 def get_SF_RDM_SA(ci_vecs, weights, norb, nelec):
-    '''
-    Returns the state-averaged spin-free active space 1-/2-/3-RDM.
-    Reordered 2-rdm <p\dagger r\dagger s q> in Pyscf is stored as: dm2[pqrs]
-    Forte stores it as rdm[prqs]
-    '''
+    # Returns the state-averaged spin-free active space 1-/2-/3-RDM.
+    # Reordered 2-rdm <p\dagger r\dagger s q> in Pyscf is stored as: dm2[pqrs]
+    # Forte stores it as rdm[prqs]
     G1 = np.zeros((norb,)*2)
     G2 = np.zeros((norb,)*4)
     G3 = np.zeros((norb,)*6)
@@ -284,7 +284,7 @@ class DSRG_MRPT2(lib.StreamObject):
             del _eri
         
     def compute_T2(self):
-        self.e_orb = {"c":np.diagonal(self.fock)[self.core], "a": np.diagonal(self.fock)[self.active], "v": np.diagonal(self.fock)[self.virt]}
+        self.e_orb = {"c":np.diagonal(self.fock)[self.core].copy(), "a": np.diagonal(self.fock)[self.active].copy(), "v": np.diagonal(self.fock)[self.virt].copy()}
         self.T2 = {}
         self.S = {}
         # Density fitting: these T2 blocks are stored: aavv, ccaa, caav, acav, aava, caaa. Internal exciation (aaaa) tensor is zero.
@@ -292,14 +292,18 @@ class DSRG_MRPT2(lib.StreamObject):
         for Vblock, tensor in self.V.items():
             if Vblock != "aaaa":
                 block = Vblock[2] + Vblock[3] + Vblock[0] + Vblock[1]   
-                self.T2[block] = np.einsum("abij->ijab", tensor.copy())
-                # Shuhang Li: This is inefficient.
-                for a in range(tensor.shape[0]):
-                    for b in range(tensor.shape[1]):
-                        for i in range(tensor.shape[2]):
-                            for j in range(tensor.shape[3]):
-                                denom = -np.float64(self.e_orb[block[2]][a] + self.e_orb[block[3]][b] - self.e_orb[block[0]][i] - self.e_orb[block[1]][j])
-                                self.T2[block][i,j,a,b] *= np.float64(regularized_denominator(denom, self.flow_param))
+                self.T2[block] = np.einsum("abij->ijab", tensor).copy()
+                libmc.compute_T2_block(self.T2[block].ctypes.data_as(ctypes.c_void_p),
+                                       self.e_orb[block[0]].ctypes.data_as(ctypes.c_void_p),
+                                       self.e_orb[block[1]].ctypes.data_as(ctypes.c_void_p),
+                                       self.e_orb[block[2]].ctypes.data_as(ctypes.c_void_p),
+                                       self.e_orb[block[3]].ctypes.data_as(ctypes.c_void_p),
+                                       ctypes.c_double(self.flow_param),
+                                       ctypes.c_int(tensor.shape[2]),
+                                       ctypes.c_int(tensor.shape[3]),
+                                       ctypes.c_int(tensor.shape[0]),
+                                       ctypes.c_int(tensor.shape[1]),
+                )
         # form S2 = 2 * J - K 
         # aavv, ccaa, caav, acav, aava, caaa                       
         self.S["aavv"] = 2.0 * self.T2["aavv"] - np.einsum("uvef->uvfe", self.T2["aavv"])
@@ -825,9 +829,10 @@ def main():
     rhf.kernel()
     casci = mcscf.CASCI(rhf, 6, 6)
     casci.kernel()
-    e_dsrg_mrpt2 = DSRG_MRPT2(casci,relax='iterate').kernel()
+    e_dsrg_mrpt2 = DSRG_MRPT2(casci, relax='iterate').kernel()
+    print(f'{e_dsrg_mrpt2=}')
 
 import cProfile
 if __name__ == '__main__':
-    cProfile.run("main()", sort="cumtime")
-    # main()
+    # cProfile.run("main()", sort="cumtime")
+    main()

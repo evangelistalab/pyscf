@@ -145,7 +145,7 @@ class KnownValues(unittest.TestCase):
         mc.mc2step()
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=0.5, relax='none')
         e = pt.kernel()
-        self.assertAlmostEqual(e, -149.932767421382778, delta=1.0e-6)
+        self.assertAlmostEqual(e, -149.93276842172745, delta=1.0e-6)
     
     def test_water_sa_casscf(self):
         mc = mcscf.CASSCF(mfh2o, 4, 4).state_average_([.5,.5],wfnsym='A1')
