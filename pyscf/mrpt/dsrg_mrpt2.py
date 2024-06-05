@@ -21,11 +21,8 @@
 import ctypes
 import numpy as np
 from pyscf import lib, mcscf
-from pyscf.lib import logger
 from pyscf import fci
-from pyscf.mcscf import mc_ao2mo
 from pyscf import ao2mo
-from pyscf.ao2mo import _ao2mo
 from pyscf import df
 
 MACHEPS = 1e-9
@@ -60,9 +57,11 @@ def regularized_denominator(x, s):
         return (1. - np.exp(-s * x**2)) / x
     
 def get_SF_RDM_SA(ci_vecs, weights, norb, nelec):
-    # Returns the state-averaged spin-free active space 1-/2-/3-RDM.
-    # Reordered 2-rdm <p\dagger r\dagger s q> in Pyscf is stored as: dm2[pqrs]
-    # Forte stores it as rdm[prqs]
+    '''
+    Returns the state-averaged spin-free active space 1-/2-/3-RDM.
+    Reordered 2-rdm <p+ r+ s q> in Pyscf is stored as: dm2[pqrs]
+    Forte stores it as rdm[prqs]
+    '''
     G1 = np.zeros((norb,)*2)
     G2 = np.zeros((norb,)*4)
     G3 = np.zeros((norb,)*6)
@@ -510,11 +509,6 @@ class DSRG_MRPT2(lib.StreamObject):
                                     ctypes.c_int(self.nvirt),
                                     ctypes.c_int(self.ncore))
 
-            # for n in range(self.ncore):
-            #     for e in range(self.nvirt):
-            #         for f in range(self.nvirt):
-            #             denom = self.e_orb["c"][m] + self.e_orb["c"][n] - self.e_orb["v"][e] - self.e_orb["v"][f]
-            #             J_m[e,f,n] *= (1.0 + np.exp(-self.flow_param * (denom)**2)) * regularized_denominator(denom, self.flow_param)
             E += np.einsum("efn,efn->", J_m, JK_m, optimize='optimal')
         return E
     
@@ -847,30 +841,11 @@ class DSRG_MRPT2(lib.StreamObject):
 from pyscf.mcscf import casci
 casci.CASCI.DSRG_MRPT2 = DSRG_MRPT2
 
-# if __name__ == '__main__':
-def main():
+if __name__ == '__main__':
     from pyscf import gto
     from pyscf import scf
     from pyscf import mcscf
     import time
-
-    # mol = gto.M(
-    #     atom = '''
-    # N 0 0 0
-    # N 0 1.4 0
-    # ''',
-    #     basis = 'cc-pvqz', spin=0, charge=0, symmetry=False
-    # )
-
-    # mf = scf.RHF(mol)
-    # mf.kernel()
-    # mc = mcscf.CASSCF(mf, 6, 6)
-    # mc.kernel()
-    # t0 = time.time()
-    # e_dsrg_mrpt2 = DSRG_MRPT2(mc, relax='iterate').kernel()
-    # print(f'{time.time()-t0=}')
-    # print(f'{e_dsrg_mrpt2=}')
-    # assert np.isclose(e_dsrg_mrpt2, -109.31258070603721, atol=1e-8)
 
     mol = gto.Mole()
     mol.build(
@@ -888,16 +863,12 @@ def main():
         ["H", (-1.20821019,  3.97969587, -0.01063248)],
         ["H", (-2.45529319,  1.81939187, -0.00886348)],],
         basis = 'ccpvtz'
-)
+    )
 
     mf = scf.RHF(mol)
     mf.conv_tol = 1e-8
     e = mf.kernel()
 
-    #
-    # DFCASSCF uses density-fitting 2e integrals overall, regardless the
-    # underlying mean-filed object
-    #
     mc = mcscf.DFCASSCF(mf, 6, 6)
     mo = mc.sort_mo([17,20,21,22,23,30])
     mc.kernel(mo)
@@ -907,8 +878,3 @@ def main():
     e_dsrg_mrpt2 = DSRG_MRPT2(mc).kernel()
     print(f'{time.time()-t0=}')
     print(f'{e_dsrg_mrpt2=}')
-
-import cProfile
-if __name__ == '__main__':
-    cProfile.run("main()", sort="cumtime")
-    # main()
