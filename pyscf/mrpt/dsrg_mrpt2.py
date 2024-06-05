@@ -259,13 +259,13 @@ class DSRG_MRPT2(lib.StreamObject):
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa"])
             Bpq_ao = lib.unpack_tril(self.with_df._cderi) # Aux * ao * ao
             self.Bpq = np.einsum("ip,lpq,jq->ijl", self.semi_coeff[self.part, :], Bpq_ao, self.semi_coeff[self.hole, :], optimize='optimal') # Particle * Hole * Aux
-            self.V["vvaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pv, self.ha, :], self.Bpq[self.pv, self.ha, :], optimize='optimal')
-            self.V["aacc"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pa, self.hc, :], optimize='optimal')
-            self.V["avca"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pv, self.ha, :], optimize='optimal')
-            self.V["avac"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.ha, :], self.Bpq[self.pv, self.hc, :], optimize='optimal')
-            self.V["vaaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pv, self.ha, :], self.Bpq[self.pa, self.ha, :], optimize='optimal')
-            self.V["aaca"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pa, self.ha, :], optimize='optimal')
-            self.V["aaaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.ha, :], self.Bpq[self.pa, self.ha, :], optimize='optimal')
+            self.V["vvaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pv, self.ha, :], self.Bpq[self.pv, self.ha, :], optimize='optimal').copy()
+            self.V["aacc"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pa, self.hc, :], optimize='optimal').copy()
+            self.V["avca"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pv, self.ha, :], optimize='optimal').copy()
+            self.V["avac"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.ha, :], self.Bpq[self.pv, self.hc, :], optimize='optimal').copy()
+            self.V["vaaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pv, self.ha, :], self.Bpq[self.pa, self.ha, :], optimize='optimal').copy()
+            self.V["aaca"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.hc, :], self.Bpq[self.pa, self.ha, :], optimize='optimal').copy()
+            self.V["aaaa"] = np.einsum("aig,bjg->abij", self.Bpq[self.pa, self.ha, :], self.Bpq[self.pa, self.ha, :], optimize='optimal').copy()
             del Bpq_ao
         else:
             self.V = dict.fromkeys(["vvaa", "aacc", "avca", "avac", "vaaa", "aaca", "aaaa", "vvcc", "vvac", "vacc"])
@@ -320,13 +320,24 @@ class DSRG_MRPT2(lib.StreamObject):
     
     def renormalize_V(self):
         for block, tensor in self.V.items():
-            a_vals = self.e_orb[block[0]]
-            b_vals = self.e_orb[block[1]]
-            i_vals = self.e_orb[block[2]]
-            j_vals = self.e_orb[block[3]]
-            denom = np.float64(a_vals[:, np.newaxis, np.newaxis, np.newaxis] + b_vals[np.newaxis, :, np.newaxis, np.newaxis]\
-                                - i_vals[np.newaxis, np.newaxis, :, np.newaxis] - j_vals[np.newaxis, np.newaxis, np.newaxis, :])
-            tensor *= np.float64(1. + np.exp(-self.flow_param * denom**2))         
+            libmc.renormalize_V(tensor.ctypes.data_as(ctypes.c_void_p),
+                                self.e_orb[block[0]].ctypes.data_as(ctypes.c_void_p),
+                                self.e_orb[block[1]].ctypes.data_as(ctypes.c_void_p),
+                                self.e_orb[block[2]].ctypes.data_as(ctypes.c_void_p),
+                                self.e_orb[block[3]].ctypes.data_as(ctypes.c_void_p),
+                                ctypes.c_double(self.flow_param),
+                                ctypes.c_int(tensor.shape[0]),
+                                ctypes.c_int(tensor.shape[1]),
+                                ctypes.c_int(tensor.shape[2]),
+                                ctypes.c_int(tensor.shape[3]),
+            )
+            # a_vals = self.e_orb[block[0]]
+            # b_vals = self.e_orb[block[1]]
+            # i_vals = self.e_orb[block[2]]
+            # j_vals = self.e_orb[block[3]]
+            # denom = np.float64(a_vals[:, np.newaxis, np.newaxis, np.newaxis] + b_vals[np.newaxis, :, np.newaxis, np.newaxis]\
+            #                     - i_vals[np.newaxis, np.newaxis, :, np.newaxis] - j_vals[np.newaxis, np.newaxis, np.newaxis, :])
+            # tensor *= np.float64(1. + np.exp(-self.flow_param * denom**2))         
     
     def compute_T1(self):
         # initialize T1 with F + [H0, A]
@@ -361,10 +372,14 @@ class DSRG_MRPT2(lib.StreamObject):
         _tmp[self.pv, self.ha] += 0.5 * np.einsum("ivaw,wu,uv->ai", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
         _tmp[self.pv, self.ha] -= 0.5 * np.einsum("iwau,vw,uv->ai", self.S["aava"], self.fock[self.active,self.active], self.L1, optimize='optimal')
         
-        for i in range(self.nhole):
-            for k in range(self.npart):
-                denom_f = np.float64(np.diagonal(self.fock)[i] - np.diagonal(self.fock)[self.ncore+k])
-                _tmp[k, i] *= np.float64(np.exp(-self.flow_param*(denom_f)**2))
+        _eh = np.float64(np.diagonal(self.fock))[self.hole].copy()
+        _ep = np.float64(np.diagonal(self.fock))[self.part].copy()
+        libmc.renormalize_F(_tmp.ctypes.data_as(ctypes.c_void_p),
+                            _eh.ctypes.data_as(ctypes.c_void_p),
+                            _ep.ctypes.data_as(ctypes.c_void_p),
+                            ctypes.c_double(self.flow_param),
+                            ctypes.c_int(self.nhole),
+                            ctypes.c_int(self.npart))
 
         self.F_tilde = np.zeros((self.npart, self.nhole), dtype='float64')
         self.F_tilde = self.fock[self.part,self.hole].copy()
@@ -455,8 +470,8 @@ class DSRG_MRPT2(lib.StreamObject):
         # The three-index integral is created in the semicanonicalization step. 
         # (me|nf) * [2 * (me|nf) - (mf|ne)] * [1 - e^(-2 * s * D)] / D
         # Batching: for a given m and n, form B(ef) = Bm(L|e) * Bn(L|f)
-        _ec = self.e_orb["c"].copy()
-        _ev = self.e_orb["v"].copy()
+        _ec = self.e_orb["c"]
+        _ev = self.e_orb["v"]
         for m in range(self.ncore):
             for n in range(m, self.ncore):
                 if m == n:
@@ -481,8 +496,8 @@ class DSRG_MRPT2(lib.StreamObject):
     def E_V_T2_CCVV(self):
         E = 0.0
         B_Lfn = self.Bpq[self.pv, self.hc, :].copy()
-        _ec = self.e_orb["c"].copy()
-        _ev = self.e_orb["v"].copy()
+        _ec = self.e_orb["c"]
+        _ev = self.e_orb["v"]
         for m in range(self.ncore):
             J_m = np.einsum("eL,fnL->efn", np.squeeze(self.Bpq[self.pv, m, :]), B_Lfn, optimize='optimal').copy()
             JK_m = 2.0 * J_m - np.einsum("efn->fen", J_m.copy())
@@ -507,9 +522,9 @@ class DSRG_MRPT2(lib.StreamObject):
         E = 0.0
         B_Lfv = self.Bpq[self.pv, self.ha, :].copy()
         temp = np.zeros((self.nact,)*2)
-        _ec = self.e_orb["c"].copy()
-        _ev = self.e_orb["v"].copy()
-        _ea = self.e_orb["a"].copy()
+        _ec = self.e_orb["c"]
+        _ev = self.e_orb["v"]
+        _ea = self.e_orb["a"]
         
         for m in range(self.ncore):
             J_m = np.einsum("eL,fvL->efv", np.squeeze(self.Bpq[self.pv, m, :]), B_Lfv, optimize='optimal').copy()
@@ -536,9 +551,9 @@ class DSRG_MRPT2(lib.StreamObject):
     def E_V_T2_CCAV(self):
         E = 0.0
         temp = np.zeros((self.nact,)*2)
-        _ec = self.e_orb["c"].copy()
-        _ev = self.e_orb["v"].copy()
-        _ea = self.e_orb["a"].copy()
+        _ec = self.e_orb["c"]
+        _ev = self.e_orb["v"]
+        _ea = self.e_orb["a"]
         for m in range(self.ncore):
             for n in range(0, self.ncore):
                 J_mn = np.einsum("eL,uL->eu", np.squeeze(self.Bpq[self.pv, m, :]), np.squeeze(self.Bpq[self.pa, n, :]), optimize='optimal').copy()
@@ -895,5 +910,5 @@ def main():
 
 import cProfile
 if __name__ == '__main__':
-    # cProfile.run("main()", sort="cumtime")
-    main()
+    cProfile.run("main()", sort="cumtime")
+    # main()

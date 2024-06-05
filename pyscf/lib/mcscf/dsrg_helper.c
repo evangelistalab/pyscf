@@ -55,6 +55,44 @@ void compute_T2_block(double *t2, double *ei, double *ej, double *ea, double *eb
 }
 }
 
+void renormalize_V(double *V, double *ei, double *ej, double *ea, double *eb, double flow_param, int ni, int nj, int na, int nb)
+{
+#pragma omp parallel
+{
+        int i,j,a,b;
+        double *pV;
+#pragma omp for schedule(dynamic, 10) collapse(2)
+        for (i = 0; i < ni; i++) {
+                for (j = 0; j < nj; j++) {
+                        for (a = 0; a < na; a++) {
+                                for (b = 0; b < nb; b++) {
+                                        double denom = ei[i] + ej[j] - ea[a] - eb[b];
+                                        pV = V + i * nj * na * nb + j * na * nb + a * nb + b;
+                                        *pV *= (1. + exp(-flow_param*denom*denom));
+                                }
+                        }
+                }
+        }
+}
+}
+
+void renormalize_F(double *F, double *ei, double *ea, double flow_param, int ni, int na)
+{
+#pragma omp parallel
+{
+        int i,a;
+        double *pF;
+#pragma omp for schedule(dynamic, 10) collapse(2)
+        for (a = 0; a < na; a++) {
+                for (i = 0; i < ni; i++) {
+                        double denom = ei[i] - ea[a];
+                        pF = F + a*ni + i;
+                        *pF *= exp(-flow_param*denom*denom);
+                }
+        }
+}
+}
+
 void compute_T1(double *t1, double *ei, double *ea, double flow_param, int ni, int na)
 {
 #pragma omp parallel
