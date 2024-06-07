@@ -161,6 +161,8 @@ class KnownValues(unittest.TestCase):
         e_sa = pt.kernel()
         self.assertAlmostEqual(e_sa[0], -76.11686746968063, delta=1.0e-6)
         self.assertAlmostEqual(e_sa[1], -75.75217542707877, delta=1.0e-6)
+# -76.116867427126
+# -75.713943178963
 
     def test_water_cation_doublet_casscf(self):
         mc = mcscf.CASSCF(mfh2op, 4, 3)
