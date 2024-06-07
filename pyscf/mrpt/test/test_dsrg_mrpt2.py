@@ -123,6 +123,7 @@ class KnownValues(unittest.TestCase):
         mc.kernel()
         e = dsrg_mrpt2.DSRG_MRPT2(mc).kernel()
         self.assertAlmostEqual(e, -108.99538785901142, delta=1.0e-6)
+# Forte: -108.995383133239699
 
     def test_hf_casci_iterative_relaxation(self):
         mc = mcscf.CASCI(mfhf, 4, 6)
@@ -130,6 +131,7 @@ class KnownValues(unittest.TestCase):
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, relax='iterate')
         pt.kernel()
         self.assertAlmostEqual(pt.e_corr, -0.19788775490851077, delta=1.0e-6)
+# Forte: -0.197886717550505
 
     def test_triplet_o2_casscf_iterative_relaxation(self):
         mc = mcscf.CASSCF(mfo2, 6, 8)
@@ -166,6 +168,7 @@ class KnownValues(unittest.TestCase):
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=1.0, relax='iterate')
         e = pt.kernel()
         self.assertAlmostEqual(e[0], -75.788112389449551, delta=1.0e-6)
+# -75.788112856007814
 
     def test_beh_doublet_casscf(self):
         mc = mcscf.CASSCF(mfbeh, 5, 3)#.density_fit() #should propagate to mcscf
@@ -174,6 +177,7 @@ class KnownValues(unittest.TestCase):
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=1.0, relax='twice')#.density_fit('cc-pvdz-jkfit') # [todo]: propagate density_fit to DSRG_MRPT2
         e = pt.kernel()
         self.assertAlmostEqual(e[0], -15.104778782361588, delta=1.0e-6)
+# -15.104777031629652
 
 if __name__ == "__main__":
     print("Full Tests for DSRG-MRPT2")
