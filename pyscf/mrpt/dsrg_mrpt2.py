@@ -100,6 +100,27 @@ def get_SF_cu3(G1, G2, G3):
     L3 += 0.5 * (np.einsum("pt,qu,rs->pqrstu", G1, G1, G1) + np.einsum("pu,qs,rt->pqrstu", G1, G1, G1))
     return L3
 
+def projected_fcisolver(h1, h2, ncas, nelecas, ecore, nroots, ss=0):
+    _fcisolver = fci.direct_spin1.FCISolver()
+    _nroots = max(5, nroots*2)
+    nss = 0
+    while True:
+        evals, evecs = _fcisolver.kernel(h1, h2, ncas, nelecas, ecore=ecore, nroots=_nroots)
+        evecs_proj = []
+        evals_proj = []
+        for i in range(_nroots):
+            if np.isclose(_fcisolver.spin_square(evecs[i], ncas, nelecas)[0], ss):
+                evecs_proj.append(evecs[i])
+                evals_proj.append(evals[i])
+                nss += 1
+        if nss >= nroots:
+            return np.array(evals_proj[:nroots]), np.array(evecs_proj[:nroots])
+        else:
+            if _nroots > evecs[0].shape[0]:
+                raise ValueError('projected_fcisolver failed to find enough states with the specified S^2 eigenvalue.')
+            _nroots += 5
+            nss = 0
+
 class DSRG_MRPT2(lib.StreamObject):
     '''
     DSRG-MRPT2
@@ -127,7 +148,7 @@ class DSRG_MRPT2(lib.StreamObject):
     >>> DSRG_MRPT2(mc, s=0.5).kernel()
     -0.15708345625685638
     '''
-    def __init__(self, mc, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, batch=False):
+    def __init__(self, mc, s=0.5, relax='none', relax_maxiter=10, relax_conv=1e-8, batch=False, ss=None):
         if (not mc.converged): raise RuntimeError('MCSCF not converged or not performed.')
         self.mc = mc
         self.flow_param = s
@@ -202,6 +223,20 @@ class DSRG_MRPT2(lib.StreamObject):
             _p = self.mc.mo_coeff[:, self.part]
             _h = self.mc.mo_coeff[:, self.hole]
             self.eri = ao2mo.incore.general(self.eri, (_p,_h,_p,_h)).reshape((self.npart, self.nhole, self.npart, self.nhole)).swapaxes(1,2)
+
+        self.ss = ss
+        if (ss is None):
+            try:
+                self.ss = self.mc.fcisolver.ss_value
+            except:
+                try:
+                    self.ss = self.mc.fcisolver.spin_square(self.mc.ci, self.nact, self.nelecas)[0]
+                except:
+                    try:
+                        self.ss = self.mc.fcisolver.spin_square(self.mc.ci[0], self.nact, self.nelecas)[0]
+                    except:
+                        raise RuntimeError("Spin square value cannot be determined from the mc object. Please provide the value using the 'ss' kwarg.")
+            
     
     def density_fit(self, auxbasis=None, with_df=None):
         self.df = True
@@ -768,10 +803,10 @@ class DSRG_MRPT2(lib.StreamObject):
     def relax_reference(self):
         self.compute_hbar()
         self.deGNO_ints()
-        
-        _fcisolver = fci.direct_spin1.FCISolver()
-        self.relax_eigval, self.ci_vecs = _fcisolver.kernel(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
-                                                                ecore=self.relax_e_scalar, nroots=self.state_average_nstates)
+
+        self.relax_eigval, self.ci_vecs = projected_fcisolver(self.hbar1_canon, self.hbar2_canon.swapaxes(1,2), self.mc.ncas, self.mc.nelecas, \
+                                                                ecore=self.relax_e_scalar, nroots=self.state_average_nstates, ss=self.ss)
+
         if (self.state_average_nstates == 1):
             self.relax_eigval = [self.relax_eigval]
             self.ci_vecs = [self.ci_vecs]
@@ -822,7 +857,7 @@ class DSRG_MRPT2(lib.StreamObject):
             self.relax_energies[irelax, 2] = self.e_casci
 
             self.relax_reference()
-            self.relax_energies[irelax, 1] = self.e_tot
+            self.relax_energies[irelax, 1] = self.e_tot[0] if isinstance(self.e_tot, np.ndarray) else self.e_tot # fix numpy depreciation warning
 
             if (self.test_relaxation_convergence(irelax)): break
             if (self.nrelax == 1): 

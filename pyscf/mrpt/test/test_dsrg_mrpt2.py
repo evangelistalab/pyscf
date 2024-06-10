@@ -160,7 +160,7 @@ class KnownValues(unittest.TestCase):
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, relax='once')
         e_sa = pt.kernel()
         self.assertAlmostEqual(e_sa[0], -76.11686746968063, delta=1.0e-6)
-        self.assertAlmostEqual(e_sa[1], -75.75217542707877, delta=1.0e-6)
+        self.assertAlmostEqual(e_sa[1], -75.71394328285785, delta=1.0e-6)
 # -76.116867427126
 # -75.713943178963
 
