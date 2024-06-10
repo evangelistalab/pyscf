@@ -797,8 +797,8 @@ class DSRG_MRPT2(lib.StreamObject):
         else:
             self.e_h2_t2 = self.H2_T2_C0()
 
-        self.e_corr = self.e_h1_t1 + self.e_h1_t2 + self.e_h2_t1 + self.e_h2_t2
-        self.e_tot = self.e_casci + self.e_corr
+        _e_corr = self.e_h1_t1 + self.e_h1_t2 + self.e_h2_t1 + self.e_h2_t2 # this is the correlation energy wrt the relaxed reference, NOT the original reference
+        self.e_tot = self.e_casci + _e_corr
 
     def relax_reference(self):
         self.compute_hbar()
@@ -851,6 +851,7 @@ class DSRG_MRPT2(lib.StreamObject):
             self.relax_energies[0, 0] = self.e_tot
             self.relax_energies[0, 2] = self.e_casci
             self.converged = True
+            self.e_corr = self.e_tot - self.e_casci
 
         for irelax in range(self.nrelax):
             self.relax_energies[irelax, 0] = self.e_tot
@@ -858,6 +859,7 @@ class DSRG_MRPT2(lib.StreamObject):
 
             self.relax_reference()
             self.relax_energies[irelax, 1] = self.e_tot[0] if isinstance(self.e_tot, np.ndarray) else self.e_tot # fix numpy depreciation warning
+            self.e_corr = self.relax_energies[irelax, 1] - self.relax_energies[0, 2] # correlation energy wrt the original unrelaxed reference
 
             if (self.test_relaxation_convergence(irelax)): break
             if (self.nrelax == 1): 
@@ -869,7 +871,7 @@ class DSRG_MRPT2(lib.StreamObject):
         if (not self.converged):
             print('Warning! relax_maxiter has been reached, DSRG-MRPT2 did not converge!')
 
-        return self.e_tot if self.nrelax == 0 else self.e_relax_eigval_shifted
+        return self.e_tot
 
 # register DSRG_MRPT2 in MCSCF
 # [todo]: is this so that we can access fcisolver options?

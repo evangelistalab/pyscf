@@ -19,10 +19,10 @@ from pyscf import scf
 from pyscf import ao2mo
 from pyscf import mcscf
 from pyscf import fci
-# from pyscf.mrpt import dsrg_mrpt2
-import sys
-sys.path.insert(0, '..')
-import dsrg_mrpt2
+from pyscf.mrpt import dsrg_mrpt2
+# import sys
+# sys.path.insert(0, '..')
+# import dsrg_mrpt2
 
 def setUpModule():
     global moln2, molhf, molo2, molo2_df, molh2o, molbeh, molh2op, mfn2, mfhf, mfo2, mfo2_df, mfh2o, mfbeh, mfh2op
@@ -68,7 +68,7 @@ def setUpModule():
     ''',
         basis = 'cc-pvdz', spin=0, charge=0, symmetry='d2h', output = '/dev/null',
     )
-    mfo2_df = scf.RHF(molo2_df).density_fit()
+    mfo2_df = scf.RHF(molo2_df).density_fit('cc-pvdz-jkfit')
     mfo2_df.kernel()
 
     molh2o = gto.M(
@@ -130,8 +130,8 @@ class KnownValues(unittest.TestCase):
         mc.kernel()
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, relax='iterate')
         pt.kernel()
-        self.assertAlmostEqual(pt.e_corr, -0.19788775490851077, delta=1.0e-6)
-# Forte: -0.197886717550505
+        self.assertAlmostEqual(pt.e_corr, -0.19737539, delta=1.0e-6)
+# Forte: -0.197374740048
 
     def test_triplet_o2_casscf_iterative_relaxation(self):
         mc = mcscf.CASSCF(mfo2, 6, 8)
@@ -139,15 +139,17 @@ class KnownValues(unittest.TestCase):
         mc.mc2step()
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=1.0, relax='iterate')
         pt.kernel()
-        self.assertAlmostEqual(pt.e_corr, -0.26375671115609844, delta=1.0e-6)
+        self.assertAlmostEqual(pt.e_corr, -0.26173265, delta=1.0e-6)
+# -0.261732560387
 
     def test_singlet_o2_casscf_df(self):
         mc = mcscf.CASSCF(mfo2_df, 6, 8)
         mc.fix_spin_(ss=0) # singlet state
         mc.mc2step()
-        pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=0.5, relax='none')
-        e = pt.kernel()
-        self.assertAlmostEqual(e, -149.93276842172745, delta=1.0e-6)
+        pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=0.5, relax='once')
+        pt.kernel()
+        self.assertAlmostEqual(pt.e_tot, -149.93467822, delta=1.0e-6)
+# -149.934676874344
     
     def test_water_sa_casscf(self):
         mc = mcscf.CASSCF(mfh2o, 4, 4).state_average_([.5,.5],wfnsym='A1')
@@ -158,7 +160,8 @@ class KnownValues(unittest.TestCase):
         #mc.kernel(mo)
         mc.mc2step(mo)
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, relax='once')
-        e_sa = pt.kernel()
+        pt.kernel()
+        e_sa = pt.e_relax_eigval_shifted
         self.assertAlmostEqual(e_sa[0], -76.11686746968063, delta=1.0e-6)
         self.assertAlmostEqual(e_sa[1], -75.71394328285785, delta=1.0e-6)
 # -76.116867427126
@@ -168,17 +171,17 @@ class KnownValues(unittest.TestCase):
         mc = mcscf.CASSCF(mfh2op, 4, 3)
         mc.mc2step()
         pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=1.0, relax='iterate')
-        e = pt.kernel()
-        self.assertAlmostEqual(e[0], -75.788112389449551, delta=1.0e-6)
+        pt.kernel()
+        self.assertAlmostEqual(pt.e_tot, -75.788112389449551, delta=1.0e-6)
 # -75.788112856007814
 
     def test_beh_doublet_casscf(self):
-        mc = mcscf.CASSCF(mfbeh, 5, 3)#.density_fit() #should propagate to mcscf
+        mc = mcscf.CASSCF(mfbeh, 5, 3)
         mc.fix_spin_(ss=0.75)
         mc.mc2step() 
-        pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=1.0, relax='twice')#.density_fit('cc-pvdz-jkfit') # [todo]: propagate density_fit to DSRG_MRPT2
-        e = pt.kernel()
-        self.assertAlmostEqual(e[0], -15.104778782361588, delta=1.0e-6)
+        pt = dsrg_mrpt2.DSRG_MRPT2(mc, s=1.0, relax='twice')
+        pt.kernel()
+        self.assertAlmostEqual(pt.e_tot, -15.104778782361588, delta=1.0e-6)
 # -15.104777031629652
 
 if __name__ == "__main__":
