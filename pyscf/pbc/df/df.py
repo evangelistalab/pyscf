@@ -133,7 +133,7 @@ class GDF(lib.StreamObject, aft.AFTDFMixin):
     # Call _CCGDFBuilder if applicable. _CCGDFBuilder is slower than
     # _RSGDFBuilder but numerically more close to previous versions
     _prefer_ccdf = False
-    # If True, force using denisty matrix-based K-build
+    # If True, force using density matrix-based K-build
     force_dm_kbuild = False
 
     _keys = {
@@ -365,7 +365,7 @@ class GDF(lib.StreamObject, aft.AFTDFMixin):
                 LpqR = LpqI = None
 
         if cell.dimension == 2 and cell.low_dim_ft_type != 'inf_vacuum':
-            # Truncated Coulomb operator is not postive definite. Load the
+            # Truncated Coulomb operator is not positive definite. Load the
             # CDERI tensor of negative part.
             with _load3c(self._cderi, self._dataname+'-', kpti_kptj,
                          ignore_key_error=True) as j3c:

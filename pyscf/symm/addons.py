@@ -108,7 +108,7 @@ def symmetrize_orb(mol, mo, orbsym=None, s=None,
     :func:`symmetrize_space` symmetrizes the entire space by mixing different
     orbitals.
 
-    Note this function might return non-orthorgonal orbitals.
+    Note this function might return non-orthogonal orbitals.
     Call :func:`symmetrize_space` to find the symmetrized orbitals that are
     close to the given orbitals.
 
@@ -281,7 +281,7 @@ def symmetrize_space(mol, mo, s=None,
             orb_irrep = numpy.dot(orb_irrep, orth.lowdin(moso))
             max_non_orth = abs(numpy.dot(orb_irrep.T.conj(), numpy.dot(s, orb_irrep))
                                - numpy.eye(orb_irrep.shape[1])).max()
-            logger.debug(mol, 'Non-orthogonality in irrep %3d after symmetrization and orthogonalizastion: %8.2e',
+            logger.debug(mol, 'Non-orthogonality in irrep %3d after symmetrization and orthogonalization: %8.2e',
                          i, max_non_orth)
         mo1.append(orb_irrep)
     mo1 = numpy.hstack(mo1)

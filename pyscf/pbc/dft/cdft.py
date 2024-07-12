@@ -73,8 +73,8 @@ def cdft(mf,cell,offset,orbital,basis=None):
 
 def fast_iao_mullikan_pop(mf,cell,a=None):
     '''
-    Input: mf -- a preconverged mean fild object
-    Returns: mullikan populaion analysis in the basisIAO a
+    Input: mf -- a preconverged mean field object
+    Returns: mullikan population analysis in the basisIAO a
     '''
 
     #
@@ -123,7 +123,7 @@ if __name__ == '__main__':
     cell.build()
     cell.rcut*=2
 
-    print("running intial DFT calc to generate IAOs")
+    print("running initial DFT calc to generate IAOs")
     mf = dft.RKS(cell)
     mf.chkfile = 'graphene.chk'
     mf.init_guess = 'chkfile'
