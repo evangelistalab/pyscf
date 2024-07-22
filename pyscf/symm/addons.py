@@ -197,7 +197,7 @@ def symmetrize_space(mol, mo, s=None,
     '''Symmetrize the given orbital space.
 
     This function is different to the :func:`symmetrize_orb`:  In this function,
-    the given orbitals are mixed to reveal the symmtery; :func:`symmetrize_orb`
+    the given orbitals are mixed to reveal the symmetry; :func:`symmetrize_orb`
     projects out non-symmetric components for each orbital.
 
     Args:
@@ -354,7 +354,7 @@ def symmetrize_multidim(mol, mo, s=None,
             if (max_non_orth_lowdin - max_non_orth) > tol/100:
                 mo = mo_lowdin
                 s_mo = numpy.dot(s, mo)
-                logger.info(mol, 'Use Lowdin-orthogonalizied input orbitals')
+                logger.info(mol, 'Use Lowdin-orthogonalized input orbitals')
             else:
                 logger.info(mol, 'Use original input orbitals')
     irreps_mdim = []
@@ -489,7 +489,7 @@ def irrep_id2name(gpname, irrep_id):
             See IRREP_ID_TABLE in pyscf/symm/param.py
 
     Returns:
-        Irrep sybmol, str
+        Irrep symbol, str
     '''
     gpname = std_symb(gpname)
     if gpname == 'SO3':

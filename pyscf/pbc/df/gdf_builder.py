@@ -738,7 +738,7 @@ def auxbar(fused_cell):
     aux_loc = fused_cell.ao_loc_nr()
     naux = aux_loc[-1]
     vbar = np.zeros(naux)
-    # SR ERI should not have contributions from backgound charge
+    # SR ERI should not have contributions from background charge
     if fused_cell.dimension < 2 or fused_cell.omega < 0:
         return vbar
 
@@ -750,7 +750,7 @@ def auxbar(fused_cell):
             if es.size == 1:
                 vbar[aux_loc[i]] = -1/es[0]
             else:
-                # Remove the normalization to get the primitive contraction coeffcients
+                # Remove the normalization to get the primitive contraction coefficients
                 norms = half_sph_norm/gto.gaussian_int(2, es)
                 cs = np.einsum('i,ij->ij', 1/norms, fused_cell._libcint_ctr_coeff(i))
                 vbar[aux_loc[i]:aux_loc[i+1]] = np.einsum('in,i->n', cs, -1/es)

@@ -306,7 +306,7 @@ def prange(start, end, step):
             yield i, min(i+step, end)
 
 def prange_tril(start, stop, blocksize):
-    '''Similar to :func:`prange`, yeilds start (p0) and end (p1) with the
+    '''Similar to :func:`prange`, yields start (p0) and end (p1) with the
     restriction p1*(p1+1)/2-p0*(p0+1)/2 < blocksize
 
     Examples:
@@ -557,7 +557,7 @@ class StreamObject:
     ``mf = scf.RHF(mol).set(conv_tol=1e-5)`` is identical to proceed in two steps
     ``mf = scf.RHF(mol); mf.conv_tol=1e-5``
 
-    2 ``.run`` function to execute the kenerl function (the function arguments
+    2 ``.run`` function to execute the kernel function (the function arguments
     are passed to kernel function).  If keyword arguments is given, it will first
     call ``.set`` function to update object attributes then execute the kernel
     function.  Eg
@@ -727,7 +727,7 @@ def alias(fn, alias_name=None):
 
     Using alias function instead of fn1 = fn because some methods may be
     overloaded in the child class. Using "alias" can make sure that the
-    overloaded mehods were called when calling the aliased method.
+    overloaded methods were called when calling the aliased method.
     '''
     name = fn.__name__
     if alias_name is None:
@@ -1015,7 +1015,7 @@ class call_in_background:
 
     Attributes:
         sync (bool): Whether to run in synchronized mode.  The default value
-            is False (asynchoronized mode).
+            is False (asynchronized mode).
 
     Examples:
 
@@ -1064,7 +1064,7 @@ class call_in_background:
                 # import lock) bug in the threading module.  See also
                 # https://github.com/paramiko/paramiko/issues/104
                 # https://docs.python.org/2/library/threading.html#importing-in-threaded-code
-                # Disable the asynchoronous mode for safe importing
+                # Disable the asynchronous mode for safe importing
                 def def_async_fn(i):
                     return fns[i]
 

@@ -319,7 +319,7 @@ def format_atom(atoms, origin=0, axes=None,
     coordinates to AU, rotate and shift the molecule.
     If the :attr:`~Mole.atom` is a string, it takes ";" and "\\n"
     for the mark to separate atoms;  "," and arbitrary length of blank space
-    to spearate the individual terms for an atom.  Blank line will be ignored.
+    to separate the individual terms for an atom.  Blank line will be ignored.
 
     Args:
         atoms : list or str
@@ -1961,7 +1961,7 @@ def same_mol(mol1, mol2, tol=1e-5, cmp_basis=True, ignore_chiral=False):
 is_same_mol = same_mol
 
 def chiral_mol(mol1, mol2=None):
-    '''Detect whether the given molelcule is chiral molecule or two molecules
+    '''Detect whether the given molecule is chiral molecule or two molecules
     are chiral isomers.
     '''
     if mol2 is None:
@@ -2197,7 +2197,7 @@ class MoleBase(lib.StreamObject):
             subgroup
 
         atom : list or str
-            To define molecluar structure.  The internal format is
+            To define molecular structure.  The internal format is
 
             | atom = [[atom1, (x, y, z)],
             |         [atom2, (x, y, z)],
@@ -2473,7 +2473,7 @@ class MoleBase(lib.StreamObject):
             max_memory : int, float
                 Allowd memory in MB.  If given, overwrite :attr:`Mole.max_memory`
             atom : list or str
-                To define molecluar structure.
+                To define molecular structure.
             basis : dict or str
                 To define basis set.
             nucmod : dict or str
@@ -3748,7 +3748,7 @@ class Mole(MoleBase):
     def ao2mo(self, mo_coeffs, erifile=None, dataname='eri_mo', intor='int2e',
               **kwargs):
         '''Integral transformation for arbitrary orbitals and arbitrary
-        integrals.  See more detalied documentation in func:`ao2mo.kernel`.
+        integrals.  See more detailed documentation in func:`ao2mo.kernel`.
 
         Args:
             mo_coeffs (an np array or a list of arrays) : A matrix of orbital
