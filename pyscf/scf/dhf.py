@@ -62,11 +62,13 @@ def kernel(mf, conv_tol=1e-9, conv_tol_grad=None,
         dm = dm0
 
     mf._coulomb_level = 'LLLL'
+    cycles = 0
     if dm0 is None and mf._coulomb_level.upper() == 'LLLL':
         scf_conv, e_tot, mo_energy, mo_coeff, mo_occ \
                 = hf.kernel(mf, 1e-2, 1e-1,
                             dump_chk, dm0=dm, callback=callback,
                             conv_check=False)
+        cycles += mf.cycles
         dm = mf.make_rdm1(mo_coeff, mo_occ)
         mf._coulomb_level = 'SSLL'
 
@@ -77,13 +79,16 @@ def kernel(mf, conv_tol=1e-9, conv_tol_grad=None,
                     = hf.kernel(mf, 1e-3, 1e-1,
                                 dump_chk, dm0=dm, callback=callback,
                                 conv_check=False)
+            cycles += mf.cycles
             dm = mf.make_rdm1(mo_coeff, mo_occ)
         mf._coulomb_level = 'SSSS'
     else:
         mf._coulomb_level = 'SSLL'
 
-    return hf.kernel(mf, conv_tol, conv_tol_grad, dump_chk, dm0=dm,
-                     callback=callback, conv_check=conv_check)
+    out = hf.kernel(mf, conv_tol, conv_tol_grad, dump_chk, dm0=dm,
+                    callback=callback, conv_check=conv_check)
+    mf.cycles = cycles + mf.cycles
+    return out
 
 def energy_elec(mf, dm=None, h1e=None, vhf=None):
     r'''Electronic part of Dirac-Hartree-Fock energy
@@ -416,7 +421,7 @@ def dip_moment(mol, dm, unit='Debye', verbose=logger.NOTE, **kwargs):
 
     charges = mol.atom_charges()
     coords  = mol.atom_coords()
-    charge_center = numpy.einsum('i,ix->x', charges, coords)
+    charge_center = numpy.einsum('i,ix->x', charges, coords) / sum(charges)
     with mol.with_common_orig(charge_center):
         ll_dip = mol.intor_symmetric('int1e_r_spinor', comp=3)
         ss_dip = mol.intor_symmetric('int1e_sprsp_spinor', comp=3)
@@ -424,7 +429,9 @@ def dip_moment(mol, dm, unit='Debye', verbose=logger.NOTE, **kwargs):
     n2c = mol.nao_2c()
     c = lib.param.LIGHT_SPEED
     dip = numpy.einsum('xij,ji->x', ll_dip, dm[:n2c,:n2c]).real
-    dip+= numpy.einsum('xij,ji->x', ss_dip, dm[n2c:,n2c:]).real * (.5/c**2)
+    dip+= numpy.einsum('xij,ji->x', ss_dip, dm[n2c:,n2c:]).real * (.5/c)**2
+
+    dip *= -1.
 
     if unit.upper() == 'DEBYE':
         dip *= nist.AU2DEBYE
@@ -471,8 +478,7 @@ class DHF(hf.SCF):
     # corrections for small component when with_ssss is set to False
     ssss_approx = getattr(__config__, 'scf_dhf_SCF_ssss_approx', 'Visscher')
 
-    _keys = {'conv_tol', 'with_ssss', 'with_gaunt',
-                 'with_breit', 'ssss_approx'}
+    _keys = {'conv_tol', 'with_ssss', 'with_gaunt', 'with_breit', 'ssss_approx'}
 
     def __init__(self, mol):
         hf.SCF.__init__(self, mol)
