@@ -17,7 +17,7 @@
 add_library(fci SHARED
   fci_contract.c fci_contract_nosym.c
   fci_rdm.c fci_string.c fci_4pdm.c
-  select_ci.c)
+  select_ci.c dsrg_helper.c)
 add_dependencies(fci np_helper)
 
 set_target_properties(fci PROPERTIES
